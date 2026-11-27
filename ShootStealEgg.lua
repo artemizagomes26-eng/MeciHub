@@ -2288,13 +2288,17 @@ local Config = {
   KillAuraWaitEvent = 0.004,
   ShootRemoteName = "",
   EventShootRemoteName = "",
-  ScreenClickFallback = false,
+  ScreenClickFallback = true,
   AutoUpgrader = false,
   UpgraderDelay = 2,
   UpgradeReturnDelay = 0.6,
   UpgradeFlags = {Gun = true, Treadmill = true, Companion = true, Trail = true},
   EggWhitelist = {},
   PlaceSpot = nil,
+  PrivateServerLink = "",
+  AutoEvent = true,
+  EventChoice = "All",
+  EventFloatHeight = 7,
   DeliverHeight = 0.6,
   EspRange = 250,
 }
@@ -2303,6 +2307,9 @@ local RemoteCache = {}
 local espObjects = {}
 local lastInventorySignature = ""
 local myPlot = nil
+local captureActive = false
+local capturedRemote = nil
+local captureHookOk = false
 
 local Window = Speed_Library:CreateWindow({
   Title = "Meci Hub",
@@ -2322,6 +2329,7 @@ local FarmSection = MainTab:AddSection("Farm", true)
 local QuickSection = MainTab:AddSection("Quick Actions", true)
 local UtilitySection = AutomationTab:AddSection("Utility", true)
 local CombatSection = AutomationTab:AddSection("Combat", true)
+local EventSection = AutomationTab:AddSection("Events", true)
 local DeliverySection = AutomationTab:AddSection("Delivery", true)
 local UpgradeSection = UpgradeTab:AddSection("Auto Upgrader", true)
 local EspSection = EspTab:AddSection("Visuals", true)
@@ -2338,6 +2346,69 @@ end
 local function action(text)
   pcall(function() actionView:Set({Title = "Last Action", Content = text}) end)
 end
+
+local function argLabel(value)
+  local ok, text = pcall(function()
+    if typeof(value) == "Instance" then return value:GetFullName() end
+    if typeof(value) == "Vector3" then
+      return "V3(" .. math.floor(value.X * 100) / 100 .. "," .. math.floor(value.Y * 100) / 100 .. "," .. math.floor(value.Z * 100) / 100 .. ")"
+    end
+    if typeof(value) == "CFrame" then return "CF(" .. math.floor(value.Position.X * 100) / 100 .. ")" end
+    if type(value) == "table" then return "table" end
+    return tostring(value)
+  end)
+  return ok and tostring(text) or "?"
+end
+
+local function describeArgs(...)
+  local parts = {}
+  for _, value in ipairs({...}) do
+    parts[#parts + 1] = argLabel(value)
+  end
+  return table.concat(parts, ", ")
+end
+
+pcall(function()
+  local oldNamecall
+  local hookFunc = function(self, ...)
+    if captureActive and typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction") or self:IsA("UnreliableRemoteEvent")) then
+      local method = getnamecallmethod and getnamecallmethod() or ""
+      if method == "FireServer" or method == "InvokeServer" or method == "Fire" then
+        capturedRemote = {Name = self.Name, FullName = self:GetFullName(), Args = describeArgs(...)}
+        captureActive = false
+        action("Captured " .. self.Name .. "(" .. capturedRemote.Args .. ")")
+      end
+    end
+    return oldNamecall(self, ...)
+  end
+  if type(newcclosure) == "function" then hookFunc = newcclosure(hookFunc) end
+  oldNamecall = hookmetamethod(game, "__namecall", hookFunc)
+  captureHookOk = oldNamecall ~= nil
+end)
+
+local Genv = (getgenv and getgenv()) or _G
+local function setPrivateServerLink(link)
+  local value = tostring(link or "")
+  Config.PrivateServerLink = value
+  pcall(function() Genv.MeciHubPrivateServerLink = value end)
+  if value == "" then action("Private server link cleared") return end
+  local place = string.match(value, "placeId=(%d+)") or string.match(value, "/games/(%d+)")
+  local code = string.match(value, "privateServerLinkCode=([^&]+)") or string.match(value, "linkCode=([^&]+)")
+  if place and tonumber(place) ~= game.PlaceId then
+    action("PV link PlaceId " .. place .. " != " .. tostring(game.PlaceId))
+  else
+    action("PV link saved" .. (code and " code=" .. string.sub(code, 1, 8) .. "..." or ""))
+  end
+end
+
+pcall(function()
+  local initial = Genv.MeciHubPrivateServerLink
+  if (not initial or initial == "") and type(getclipboard) == "function" then
+    local clip = getclipboard()
+    if clip and (string.find(clip, "privateServerLinkCode") or string.find(clip, "linkCode")) then initial = clip end
+  end
+  if initial and initial ~= "" then setPrivateServerLink(initial) end
+end)
 
 local function callRemote(remote, ...)
   local args = {...}
@@ -2617,24 +2688,33 @@ local function shootViaRemote(target)
     local ok = firePrompt(prompt)
     if ok then return true, "prompt" end
   end
-  local remote = findTargetRemote(target)
-  if not remote then
-    local patterns = {}
-    if Config.EventShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.EventShootRemoteName) end
-    if Config.ShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.ShootRemoteName) end
-    for _, pattern in ipairs({"shoot", "fire", "attack", "crate", "box", "turkey", "mech", "boss", "event", "damage", "hit"}) do
-      patterns[#patterns + 1] = pattern
-    end
-    remote = findRemote(patterns)
-  end
-  if not remote then return false, "no shoot remote" end
   local part = partOf(target)
-  return callRemote(remote, target.Name, part and part.Position or nil)
+  local position = part and part.Position or nil
+  local isEvent = isTarget(target, {"TURKEY", "TITAN", "MECH", "BOSS", "THANKSGIVING", "EVENT"})
+  local patterns = {}
+  if isEvent and Config.EventShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.EventShootRemoteName) end
+  if Config.ShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.ShootRemoteName) end
+  for _, pattern in ipairs({"shoot", "fire", "attack", "crate", "box"}) do patterns[#patterns + 1] = pattern end
+  if isEvent then
+    for _, pattern in ipairs({"turkey", "mech", "boss", "event", "damage", "hit"}) do patterns[#patterns + 1] = pattern end
+  end
+  local remote = findRemote(patterns)
+  if remote then
+    local ok, note = callRemote(remote, target.Name, position)
+    if ok then return true, "remote " .. remote.Name end
+  end
+  remote = findTargetRemote(target)
+  if remote then
+    local ok, note = callRemote(remote, target.Name, position)
+    if ok then return true, "target remote " .. remote.Name end
+    targetRemoteCache[target:GetFullName()] = nil
+  end
+  return false, "no shoot remote"
 end
 
 local function shootOnce()
-  local target = nearestTarget({"BOX", "CRATE", "PACKAGE", "CARTON"})
-  if not target then return "no box" end
+  local target = nearestTarget({"BOX", "CRATE", "PACKAGE", "CARTON", "TURKEY", "TITAN", "MECH", "BOSS", "THANKSGIVING"})
+  if not target then return "no target" end
   local ok, note = shootViaRemote(target)
   if ok then return target.Name .. " remote" end
   if not Config.ScreenClickFallback then return note end
@@ -2734,30 +2814,29 @@ local function trainOnce()
 end
 
 local function killAuraOnce(burst, waitTime)
-  local words = {"BOX", "CRATE", "PACKAGE", "CARTON"}
-  if eventActive() then
-    words = {"TURKEY", "TITAN", "MECH", "BOSS", "BOX", "CRATE", "PACKAGE", "CARTON"}
-  end
+  local words = {"BOX", "CRATE", "PACKAGE", "CARTON", "TURKEY", "TITAN", "MECH", "BOSS", "THANKSGIVING", "EVENT"}
   local target = nearestTarget(words)
   if not target then return false, "no target" end
-  local hits, lastNote = 0, "no shoot remote"
-  burst = burst or Config.KillAuraBurst
-  waitTime = waitTime or 0.008
+  local hits, lastNote, clicks = 0, "no shoot remote", 0
+  local isEvent = isTarget(target, {"TURKEY", "TITAN", "MECH", "BOSS", "THANKSGIVING", "EVENT"})
+  burst = burst or (isEvent and Config.KillAuraBurstEvent or Config.KillAuraBurst)
+  waitTime = waitTime or (isEvent and Config.KillAuraWaitEvent or 0.008)
   for _ = 1, burst do
     pcall(faceTarget, target)
     local ok, note = shootViaRemote(target)
     if ok then hits, lastNote = hits + 1, note end
+    if Config.ScreenClickFallback then
+      local point = safeShootPoint(partOf(target))
+      if point then
+        pcall(virtualClick, point)
+        clicks = clicks + 1
+      end
+    end
     task.wait(waitTime)
   end
-  if hits > 0 then return true, target.Name .. " x" .. hits .. " " .. lastNote end
-  if not Config.ScreenClickFallback then return false, lastNote end
-  local point = safeShootPoint(partOf(target))
-  if not point then return false, "unsafe point" end
-  for _ = 1, burst do
-    pcall(virtualClick, point)
-    task.wait(0.01)
-  end
-  return true, target.Name
+  if hits > 0 then return true, target.Name .. " x" .. hits .. " " .. lastNote .. " clicks=" .. clicks end
+  if clicks > 0 then return true, target.Name .. " screen x" .. clicks end
+  return false, lastNote
 end
 
 local function uidOf(inst)
@@ -2766,6 +2845,142 @@ local function uidOf(inst)
     if value ~= nil then return value end
   end
   return nil
+end
+
+local EVENT_ENTRIES = {
+  {Name = "Titan Mech", Words = {"TITAN", "MECH"}},
+  {Name = "Mech", Words = {"MECH"}},
+  {Name = "Turkey", Words = {"TURKEY", "THANKSGIVING"}},
+}
+local activeEventTarget = nil
+local activeEventName = nil
+local activeEventPosition = nil
+local eventBusy = false
+local eventStop = false
+
+local function eventAllowed(name)
+  return Config.EventChoice == "All" or Config.EventChoice == name
+end
+
+local function eventAnchor(target)
+  for _, name in ipairs({"Head", "UpperTorso", "Torso", "HumanoidRootPart"}) do
+    local part = target:FindFirstChild(name, true)
+    if part and part:IsA("BasePart") then return part end
+  end
+  local humanoid = target:FindFirstChildWhichIsA("Humanoid", true)
+  if humanoid and humanoid.RootPart then return humanoid.RootPart end
+  return partOf(target)
+end
+
+local function eventAlive(target)
+  if not target or not target.Parent then return false end
+  local humanoid = target:FindFirstChildWhichIsA("Humanoid", true)
+  if humanoid and humanoid.Health <= 0 then return false end
+  return true
+end
+
+local function findSelectedEvent()
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  local origin = root and root.Position or nil
+  local best, bestName, bestDistance = nil, nil, math.huge
+  for _, entry in ipairs(EVENT_ENTRIES) do
+    if eventAllowed(entry.Name) then
+      for _, target in ipairs(findTargets(entry.Words)) do
+        if eventAlive(target) then
+          local anchor = eventAnchor(target)
+          local pos = anchor and anchor.Position or nil
+          local distance = origin and pos and (pos - origin).Magnitude or 0
+          if distance < bestDistance then best, bestName, bestDistance = target, entry.Name, distance end
+        end
+      end
+    end
+  end
+  return best, bestName
+end
+
+local function floatAtEvent(target)
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  local anchor = eventAnchor(target)
+  if not root or not anchor then return false end
+  local position = anchor.Position + Vector3.new(0, Config.EventFloatHeight, 0)
+  root.CFrame = CFrame.new(position, anchor.Position)
+  root.Velocity = Vector3.zero
+  return true
+end
+
+local function fireAtEvent(target)
+  pcall(floatAtEvent, target)
+  pcall(faceTarget, target)
+  local ok, note = shootViaRemote(target)
+  local clicked = 0
+  if Config.ScreenClickFallback then
+    local point = safeShootPoint(partOf(target))
+    if point then pcall(virtualClick, point); clicked = 1 end
+  end
+  return ok or clicked > 0, note
+end
+
+local function runEvent(target, name)
+  if not target or not eventAlive(target) then return false end
+  activeEventTarget = target
+  activeEventName = name
+  eventStop = false
+  local anchor = eventAnchor(target)
+  activeEventPosition = anchor and anchor.Position or nil
+  action("Event started " .. name .. " " .. target.Name)
+  local started = os.clock()
+  local hadCharacter = Player.Character ~= nil
+  while eventAlive(target) and not eventStop and os.clock() - started < 180 do
+    local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then
+      if hadCharacter then
+        action("Respawning - returning to " .. name)
+        hadCharacter = false
+      end
+      task.wait(0.2)
+    else
+      if not hadCharacter then
+        action("Back at " .. name)
+        hadCharacter = true
+      end
+      pcall(floatAtEvent, target)
+      pcall(fireAtEvent, target)
+      task.wait(Config.EventKillAuraWaitEvent)
+    end
+  end
+  if eventStop then
+    action("Event stopped " .. name)
+    if activeEventTarget == target then
+      activeEventTarget = nil
+      activeEventName = nil
+      activeEventPosition = nil
+    end
+    return false
+  end
+  if not eventAlive(target) then
+    action("Event defeated " .. name)
+    if activeEventTarget == target then
+      activeEventTarget = nil
+      activeEventName = nil
+      activeEventPosition = nil
+    end
+    return true
+  end
+  action("Event timeout " .. name)
+  return false
+end
+
+local function startSelectedEvent()
+  if eventBusy then return false, "event busy" end
+  local target, name = findSelectedEvent()
+  if not target then return false, "no " .. Config.EventChoice .. " event" end
+  eventBusy = true
+  eventStop = false
+  task.spawn(function()
+    pcall(runEvent, target, name)
+    eventBusy = false
+  end)
+  return true, "starting " .. name
 end
 
 local function inventoryUid()
@@ -3204,17 +3419,28 @@ task.spawn(function()
 end)
 
 task.spawn(function()
+  while true do
+    task.wait(0.5)
+    if Config.AutoEvent and not eventBusy and not activeEventTarget then
+      local target = findSelectedEvent()
+      if target then
+        local ok, note = startSelectedEvent()
+        if not ok and note ~= "event busy" then action(note) end
+      end
+    end
+  end
+end)
+
+task.spawn(function()
   local lastKill = 0
   while true do
     task.wait(0.05)
     local isEvent = eventActive()
     local delay = isEvent and Config.EventKillAuraDelay or Config.KillAuraDelay
-    local burst = isEvent and Config.KillAuraBurstEvent or Config.KillAuraBurst
-    local waitTime = isEvent and Config.KillAuraWaitEvent or 0.008
-    if Config.KillAura and os.clock() - lastKill >= delay then
+    if Config.KillAura and not eventBusy and os.clock() - lastKill >= delay then
       lastKill = os.clock()
       pcall(function()
-        local done, note = killAuraOnce(burst, waitTime)
+        local done, note = killAuraOnce()
         if done then action("Kill aura " .. note) end
       end)
     end
@@ -3284,9 +3510,21 @@ FarmSection:AddToggle({Title = "Auto Upgrade", Content = "Upgrades gun, speed, b
 UtilitySection:AddToggle({Title = "Instant Interact", Content = "Removes ProximityPrompt hold delay", Default = false, Callback = function(v) Config.InstantInteract = v; if v then pcall(applyInstantInteract) end end})
 UtilitySection:AddToggle({Title = "Auto Train", Content = "Teleports to the treadmill and trains", Default = false, Callback = function(v) Config.AutoTrain = v; if v then pcall(resetCamera) end end})
 CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires at boxes and Turkey/Mech/Titan events", Default = false, Callback = function(v) Config.KillAura = v; if v then pcall(recenterCamera) end end})
-CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Uses screen clicks only if no shoot remote is known", Default = false, Callback = function(v) Config.ScreenClickFallback = v end})
+CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Clicks the target if no remote works", Default = true, Callback = function(v) Config.ScreenClickFallback = v end})
 CombatSection:AddInput({Title = "Shoot remote", Content = "Exact remote name from Scan remotes", Default = "", Callback = function(v) Config.ShootRemoteName = v end})
 CombatSection:AddInput({Title = "Event shoot remote", Content = "Exact Turkey/Mech/Titan remote, optional", Default = "", Callback = function(v) Config.EventShootRemoteName = v end})
+EventSection:AddInput({Title = "Private server link", Content = "Paste the private server link", Default = Config.PrivateServerLink, Callback = setPrivateServerLink})
+EventSection:AddDropdown({Title = "Event choice", Content = "Which event to complete", Multi = false, Options = {"All", "Titan Mech", "Mech", "Turkey"}, Default = "All", Callback = function(v) Config.EventChoice = v or "All"; action("Event choice: " .. Config.EventChoice) end})
+EventSection:AddToggle({Title = "Auto events", Content = "Starts the selected event automatically", Default = true, Callback = function(v) Config.AutoEvent = v end})
+EventSection:AddButton({Title = "Complete event", Content = "Starts the chosen event now", Callback = function()
+  local ok, note = startSelectedEvent()
+  action(ok and note or note)
+end})
+EventSection:AddButton({Title = "Stop event", Content = "Stops the current event", Callback = function()
+  eventStop = true
+  action("Event stopping")
+end})
+EventSection:AddSlider({Title = "Float height", Content = "Studs above the torso/head", Increment = 1, Min = 2, Max = 20, Default = 7, Callback = function(v) Config.EventFloatHeight = v end})
 DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked animals to your plot", Default = false, Callback = function(v) Config.AutoDeliver = v end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
@@ -3320,11 +3558,7 @@ QuickSection:AddButton({Title = "Train once", Content = "Uses the nearest treadm
   action("Train " .. (done and note or note))
 end})
 QuickSection:AddButton({Title = "Kill aura once", Content = "Fires a rapid burst at the nearest target", Callback = function()
-  local isEvent = eventActive()
-  local done, note = killAuraOnce(
-    isEvent and Config.KillAuraBurstEvent or Config.KillAuraBurst,
-    isEvent and Config.KillAuraWaitEvent or 0.008
-  )
+  local done, note = killAuraOnce()
   action("Kill aura " .. (done and note or note))
 end})
 QuickSection:AddButton({Title = "Equip best", Content = "Equips the highest rate animal", Callback = function()
@@ -3338,6 +3572,27 @@ QuickSection:AddButton({Title = "Scan remotes", Content = "Prints every remote i
   print("[Meci Hub] " .. table.concat(names, "\n"))
   status("Scan", message)
   action(message)
+end})
+QuickSection:AddButton({Title = "Capture shoot remote", Content = "Fire manually once to learn the exact remote", Callback = function()
+  if not captureHookOk then action("Namecall hook unavailable") return end
+  Config.KillAura = false
+  capturedRemote = nil
+  captureActive = true
+  action("Capturing - fire once in game now")
+  task.delay(12, function()
+    if captureActive then
+      captureActive = false
+      action("Capture timed out")
+    elseif capturedRemote then
+      action("Captured " .. capturedRemote.FullName .. "(" .. capturedRemote.Args .. ")")
+    end
+  end)
+end})
+QuickSection:AddButton({Title = "Use captured remote", Content = "Applies the last captured name to both inputs", Callback = function()
+  if not capturedRemote then action("No captured remote") return end
+  Config.ShootRemoteName = capturedRemote.Name
+  Config.EventShootRemoteName = capturedRemote.Name
+  action("Using " .. capturedRemote.FullName)
 end})
 
 EspSection:AddToggle({Title = "ESP Box", Content = "Shows boxes with animal and cash rate", Default = false, Callback = function(v) Config.EspBox = v; pcall(refreshEsp) end})
@@ -3375,4 +3630,16 @@ pcall(function()
   })
 end)
 
-status("Ready", "Use Scan remotes once to confirm the game network names.")
+if Config.PrivateServerLink == "" then
+  pcall(function()
+    Speed_Library:SetNotification({
+      Title = "Meci Hub",
+      Description = "Private server link",
+      Content = "Cole o link do servidor PV na aba Events.",
+      Time = 8,
+      Delay = 1,
+    })
+  end)
+end
+
+status("Ready", "Cole o link PV na aba Events e escolha Titan Mech, Mech, Turkey ou All.")

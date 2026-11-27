@@ -2281,10 +2281,15 @@ local Config = {
   PlaceDelay = 3,
   UpgradeDelay = 10,
   TrainDelay = 5,
-  KillAuraDelay = 0.25,
+  KillAuraDelay = 0.12,
+  EventKillAuraDelay = 0.045,
   KillAuraBurst = 4,
   ShootRemoteName = "",
   ScreenClickFallback = false,
+  AutoUpgrader = false,
+  UpgraderDelay = 2,
+  UpgradeReturnDelay = 0.6,
+  UpgradeFlags = {Gun = true, Treadmill = true, Companion = true, Trail = true},
   DeliverHeight = 0.6,
   EspRange = 250,
 }
@@ -2303,6 +2308,7 @@ local Window = Speed_Library:CreateWindow({
 
 local MainTab = Window:CreateTab({Name = "Main", Icon = MECI_ICON})
 local AutomationTab = Window:CreateTab({Name = "Automation", Icon = MECI_ICON})
+local UpgradeTab = Window:CreateTab({Name = "Upgrader", Icon = MECI_ICON})
 local EspTab = Window:CreateTab({Name = "ESP", Icon = MECI_ICON})
 local SettingsTab = Window:CreateTab({Name = "Settings", Icon = MECI_ICON})
 local StatusTab = Window:CreateTab({Name = "Status", Icon = MECI_ICON})
@@ -2312,6 +2318,7 @@ local QuickSection = MainTab:AddSection("Quick Actions", true)
 local UtilitySection = AutomationTab:AddSection("Utility", true)
 local CombatSection = AutomationTab:AddSection("Combat", true)
 local DeliverySection = AutomationTab:AddSection("Delivery", true)
+local UpgradeSection = UpgradeTab:AddSection("Auto Upgrader", true)
 local EspSection = EspTab:AddSection("Visuals", true)
 local TuneSection = SettingsTab:AddSection("Settings", true)
 local StatusSection = StatusTab:AddSection("Info", true)
@@ -2445,6 +2452,19 @@ end
 local function positionOf(inst)
   local part = inst and partOf(inst) or nil
   return part and part.Position or nil
+end
+
+local function eventActive()
+  return #findTargets({"TURKEY", "MECH"}) > 0
+end
+
+local function faceTarget(inst)
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  local pos = positionOf(inst)
+  if not root or not pos then return false end
+  local lookAt = Vector3.new(pos.X, root.Position.Y, pos.Z)
+  pcall(function() root.CFrame = CFrame.new(root.Position, lookAt) end)
+  return true
 end
 
 local function firePrompt(prompt)
@@ -2672,6 +2692,7 @@ end
 local function killAuraOnce()
   local target = nearestTarget({"BOX", "CRATE", "PACKAGE", "CARTON"})
   if not target then return false, "no box" end
+  pcall(faceTarget, target)
   local ok, note = shootViaRemote(target)
   if ok then return true, target.Name .. " remote" end
   if not Config.ScreenClickFallback then return false, note end
@@ -2731,6 +2752,111 @@ local function upgradeOnce()
     results[#results + 1] = job[1] .. "=" .. (ok and "ok" or "missing")
   end
   return table.concat(results, " ")
+end
+
+local UpgradeItems = {
+  {Key = "Gun", Name = "Arma", Words = {"GUN", "WEAPON", "RIFLE", "SHOOT"}, Patterns = {"buygun", "purchasegun", "upgradegun", "gunupgrade"}},
+  {Key = "Treadmill", Name = "Esteira", Words = {"TREADMILL", "TRAIN", "GYM"}, Patterns = {"buytreadmill", "purchasetreadmill", "upgradespeed", "treadmill"}},
+  {Key = "Companion", Name = "Companion", Words = {"COMPANION", "PET", "HELPER", "BUDDY"}, Patterns = {"buycompanion", "purchasecompanion", "upgradepet", "companion"}},
+  {Key = "Trail", Name = "Trail", Words = {"TRAIL", "EFFECT", "COSMETIC"}, Patterns = {"buytrail", "purchasetrail", "upgradetrail", "trail"}},
+}
+
+local originalPosition = nil
+local function saveOriginalPosition()
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  if not root then return false end
+  originalPosition = root.CFrame
+  return true
+end
+
+local function currentMoney()
+  for _, container in ipairs({Player:FindFirstChild("leaderstats"), Player, Player.Character}) do
+    if container then
+      for _, value in ipairs(container:GetDescendants()) do
+        if value:IsA("IntValue") or value:IsA("NumberValue") then
+          local name = string.upper(value.Name)
+          if name == "MONEY" or name == "CASH" or name == "COINS" or name == "DOLLARS" or name == "BUCKS" or name == "CURRENCY" then
+            return value.Value
+          end
+        end
+      end
+    end
+  end
+  return 0
+end
+
+local function priceFrom(inst)
+  for _, key in ipairs({"Price", "Cost", "Amount"}) do
+    local value = inst:GetAttribute(key)
+    if tonumber(value) then return tonumber(value) end
+  end
+  for _, value in ipairs(inst:GetDescendants()) do
+    if value:IsA("IntValue") or value:IsA("NumberValue") then
+      local name = string.upper(value.Name)
+      if string.find(name, "PRICE") or string.find(name, "COST") then return value.Value end
+    end
+    if value:IsA("TextLabel") or value:IsA("TextButton") then
+      local number = tonumber(tostring(value.Text):gsub(",", ""):match("%d+%.?%d*"))
+      if number and number > 0 then return number end
+    end
+  end
+  return nil
+end
+
+local function textHasWords(inst, words)
+  for _, value in ipairs(inst:GetDescendants()) do
+    local text = ""
+    if value:IsA("TextLabel") or value:IsA("TextButton") then
+      text = tostring(value.Text)
+    elseif value:IsA("ProximityPrompt") then
+      text = tostring(value.ObjectText) .. " " .. tostring(value.ActionText)
+    end
+    local upper = string.upper(text)
+    for _, word in ipairs(words) do
+      if string.find(upper, word, 1, true) then return true end
+    end
+  end
+  return false
+end
+
+local function findUpgradeSpot(item)
+  local best = nil
+  for _, inst in ipairs(workspace:GetDescendants()) do
+    if inst:IsA("Model") or inst:IsA("BasePart") then
+      local name = string.upper(inst.Name)
+      local matched = false
+      for _, word in ipairs(item.Words) do
+        if string.find(name, word, 1, true) then matched = true break end
+      end
+      if not matched and (string.find(name, "BUY") or string.find(name, "UPGRADE") or string.find(name, "SHOP")) then
+        matched = textHasWords(inst, item.Words)
+      end
+      local pos = matched and positionOf(inst) or nil
+      if pos then
+        local price = priceFrom(inst) or 0
+        if not best or price < best.Price then best = {Inst = inst, Position = pos, Price = price} end
+      end
+    end
+  end
+  return best
+end
+
+local function upgradeItem(item)
+  local spot = findUpgradeSpot(item)
+  if not spot then return false, item.Name .. ": no spot" end
+  local money = currentMoney()
+  if money < spot.Price then return false, item.Name .. ": need $" .. tostring(spot.Price) end
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  if not root then return false, "no character" end
+  if not originalPosition then originalPosition = root.CFrame end
+  teleportNear(spot.Position, spot.Position, Vector3.new(0, 2, 0))
+  local prompt = nearestPrompt(item.Words)
+  local ok = callPatterns(item.Patterns, item.Key)
+  if not ok and prompt then ok, _ = firePrompt(prompt) end
+  task.wait(Config.UpgradeReturnDelay)
+  pcall(function() root.CFrame = originalPosition end)
+  pcall(recenterCamera)
+  return true, item.Name .. " $" .. tostring(spot.Price)
 end
 
 local function targetInfo(inst)
@@ -2973,7 +3099,8 @@ task.spawn(function()
   local lastKill = 0
   while true do
     task.wait(0.05)
-    if Config.KillAura and os.clock() - lastKill >= Config.KillAuraDelay then
+    local delay = eventActive() and Config.EventKillAuraDelay or Config.KillAuraDelay
+    if Config.KillAura and os.clock() - lastKill >= delay then
       lastKill = os.clock()
       pcall(function()
         local done, note = killAuraOnce()
@@ -2987,6 +3114,25 @@ task.spawn(function()
   while true do
     task.wait(1)
     if Config.InstantInteract then pcall(applyInstantInteract) end
+  end
+end)
+
+task.spawn(function()
+  local lastUpgrade = 0
+  while true do
+    task.wait(0.5)
+    if Config.AutoUpgrader and os.clock() - lastUpgrade >= Config.UpgraderDelay then
+      lastUpgrade = os.clock()
+      for _, item in ipairs(UpgradeItems) do
+        if Config.UpgradeFlags[item.Key] then
+          local done, note = upgradeItem(item)
+          if done then
+            action("Upgrade " .. note)
+            break
+          end
+        end
+      end
+    end
   end
 end)
 
@@ -3017,6 +3163,21 @@ CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Uses screen
 CombatSection:AddInput({Title = "Shoot remote", Content = "Exact remote name from Scan remotes", Default = "", Callback = function(v) Config.ShootRemoteName = v end})
 DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked animals to your plot", Default = false, Callback = function(v) Config.AutoDeliver = v end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
+
+UpgradeSection:AddToggle({Title = "Auto Upgrader", Content = "Buys affordable upgrades and returns", Default = false, Callback = function(v) Config.AutoUpgrader = v; if v then pcall(saveOriginalPosition) end end})
+UpgradeSection:AddToggle({Title = "Arma", Content = "Upgrades the gun when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Gun = v end})
+UpgradeSection:AddToggle({Title = "Esteira", Content = "Upgrades the treadmill when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Treadmill = v end})
+UpgradeSection:AddToggle({Title = "Companion", Content = "Upgrades the companion when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Companion = v end})
+UpgradeSection:AddToggle({Title = "Trail", Content = "Upgrades the trail when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Trail = v end})
+UpgradeSection:AddButton({Title = "Save return position", Content = "Saves your current position", Callback = function() action(saveOriginalPosition() and "Position saved" or "No character") end})
+UpgradeSection:AddButton({Title = "Upgrade once", Content = "Runs all enabled upgrade items", Callback = function()
+  for _, item in ipairs(UpgradeItems) do
+    if Config.UpgradeFlags[item.Key] then
+      local done, note = upgradeItem(item)
+      if done then action("Upgrade " .. note) break end
+    end
+  end
+end})
 
 QuickSection:AddButton({Title = "Shoot once", Content = "Shoots the nearest box", Callback = function() action("Shoot " .. shootOnce()) end})
 QuickSection:AddButton({Title = "Steal once", Content = "Fires the nearest egg prompt", Callback = function()
@@ -3059,8 +3220,11 @@ TuneSection:AddSlider({Title = "Steal delay", Content = "Seconds between steals"
 TuneSection:AddSlider({Title = "Place delay", Content = "Seconds between egg cycles", Increment = 0.5, Min = 1, Max = 30, Default = 3, Callback = function(v) Config.PlaceDelay = v end})
 TuneSection:AddSlider({Title = "Upgrade delay", Content = "Seconds between upgrade rounds", Increment = 1, Min = 1, Max = 120, Default = 10, Callback = function(v) Config.UpgradeDelay = v end})
 TuneSection:AddSlider({Title = "Train delay", Content = "Seconds between training rounds", Increment = 0.5, Min = 1, Max = 60, Default = 5, Callback = function(v) Config.TrainDelay = v end})
-TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.05, Min = 0.05, Max = 2, Default = 0.25, Callback = function(v) Config.KillAuraDelay = v end})
+TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.05, Max = 2, Default = 0.12, Callback = function(v) Config.KillAuraDelay = v end})
+TuneSection:AddSlider({Title = "Event kill aura", Content = "Faster delay during Turkey/Mech events", Increment = 0.005, Min = 0.02, Max = 1, Default = 0.045, Callback = function(v) Config.EventKillAuraDelay = v end})
 TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 12, Default = 4, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
+TuneSection:AddSlider({Title = "Upgrader delay", Content = "Seconds between upgrade checks", Increment = 0.5, Min = 0.5, Max = 30, Default = 2, Callback = function(v) Config.UpgraderDelay = v end})
+TuneSection:AddSlider({Title = "Return delay", Content = "Seconds before returning after buying", Increment = 0.1, Min = 0.1, Max = 5, Default = 0.6, Callback = function(v) Config.UpgradeReturnDelay = v end})
 TuneSection:AddSlider({Title = "Deliver height", Content = "Studs above plot ground", Increment = 0.1, Min = 0, Max = 5, Default = 0.6, Callback = function(v) Config.DeliverHeight = v end})
 TuneSection:AddSlider({Title = "ESP range", Content = "Maximum studs for ESP labels", Increment = 25, Min = 50, Max = 1000, Default = 250, Callback = function(v) Config.EspRange = v; pcall(refreshEsp) end})
 

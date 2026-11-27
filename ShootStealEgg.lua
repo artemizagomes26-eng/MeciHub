@@ -2281,8 +2281,10 @@ local Config = {
   PlaceDelay = 3,
   UpgradeDelay = 10,
   TrainDelay = 5,
-  KillAuraDelay = 0.01,
-  KillAuraBurst = 12,
+  KillAuraDelay = 0.25,
+  KillAuraBurst = 4,
+  ShootRemoteName = "",
+  ScreenClickFallback = false,
   DeliverHeight = 0.6,
   EspRange = 250,
 }
@@ -2479,6 +2481,16 @@ local function resetCamera()
   end)
 end
 
+local function recenterCamera()
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  pcall(resetCamera)
+  local cam = workspace.CurrentCamera
+  if not root or not cam then return end
+  pcall(function()
+    cam.CFrame = CFrame.new(root.Position + Vector3.new(0, 4, 7), root.Position)
+  end)
+end
+
 local function teleportNear(position, lookAt, offset)
   local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
   if not root or not position then return false end
@@ -2487,7 +2499,7 @@ local function teleportNear(position, lookAt, offset)
     root.CFrame = CFrame.new(position + offset, lookAt or position)
   end)
   task.wait(0.05)
-  pcall(resetCamera)
+  pcall(recenterCamera)
   return true
 end
 
@@ -2519,38 +2531,53 @@ local function nearestTarget(words)
   return best, distance
 end
 
-local function virtualClick(point, quick)
+local function virtualClick(point)
   local cam = workspace.CurrentCamera
   if not cam then return false end
   point = point or Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-  local hold = quick and 0.002 or 0.02
-  if UserInputService.TouchEnabled and not UserInputService.MouseEnabled then
-    return pcall(function()
-      VirtualInputManager:SendTouchEvent(1, 0, point.X, point.Y)
-      task.wait(hold)
-      VirtualInputManager:SendTouchEvent(1, 2, point.X, point.Y)
-    end)
-  end
   return pcall(function()
     VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 1)
-    task.wait(hold)
+    task.wait(0.01)
     VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 1)
   end)
 end
 
+local function safeShootPoint(part)
+  local cam = workspace.CurrentCamera
+  if not cam or not part then return nil end
+  local screen, visible = cam:WorldToScreenPoint(part.Position)
+  local viewport = cam.ViewportSize
+  if not visible then return nil end
+  if screen.X < viewport.X * 0.2 or screen.X > viewport.X * 0.8 then return nil end
+  if screen.Y < viewport.Y * 0.2 or screen.Y > viewport.Y * 0.8 then return nil end
+  local point = Vector2.new(screen.X, screen.Y)
+  local ok, objects = pcall(function() return PlayerGui:GetGuiObjectsAtPosition(point) end)
+  if ok and objects and #objects > 0 then return nil end
+  return point
+end
+
+local function shootViaRemote(target)
+  local patterns = {}
+  if Config.ShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.ShootRemoteName) end
+  for _, pattern in ipairs({"shoot", "fire", "attack", "crate", "box"}) do
+    patterns[#patterns + 1] = pattern
+  end
+  local remote = findRemote(patterns)
+  if not remote then return false, "no shoot remote" end
+  local part = partOf(target)
+  return callRemote(remote, target.Name, part and part.Position or nil)
+end
+
 local function shootOnce()
   local target = nearestTarget({"BOX", "CRATE", "PACKAGE", "CARTON"})
-  local cam = workspace.CurrentCamera
-  if target and cam then
-    local part = partOf(target)
-    local screen, visible = cam:WorldToScreenPoint(part.Position)
-    if visible then
-      virtualClick(Vector2.new(screen.X, screen.Y))
-      return target.Name
-    end
-  end
-  virtualClick()
-  return "screen center"
+  if not target then return "no box" end
+  local ok, note = shootViaRemote(target)
+  if ok then return target.Name .. " remote" end
+  if not Config.ScreenClickFallback then return note end
+  local point = safeShootPoint(partOf(target))
+  if not point then return "unsafe point" end
+  virtualClick(point)
+  return target.Name
 end
 
 local function nearestPrompt(words)
@@ -2596,48 +2623,64 @@ local function plotTreadmill()
     local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
     origin = root and root.Position or nil
   end
-  local best, distance = nil, math.huge
+  local best, bestPart, distance = nil, nil, math.huge
   for _, inst in ipairs(findTargets({"TREADMILL", "TRAIN", "GYM", "WORKOUT"})) do
     local pos = positionOf(inst)
     if pos then
       local d = origin and (pos - origin).Magnitude or 0
-      if d < distance then best, distance = pos, d end
+      if d < distance then best, bestPart, distance = pos, inst, d end
     end
   end
-  if best then return best end
+  if best then return best, bestPart end
   local prompt = nearestPrompt({"TREADMILL", "TRAIN", "GYM", "WORKOUT"})
   if prompt then
     local ancestor = prompt:FindFirstAncestorWhichIsA("BasePart") or prompt.Parent
-    return positionOf(ancestor)
+    return positionOf(ancestor), ancestor
   end
-  return nil
+  return nil, nil
+end
+
+local function treadmillOffset(inst)
+  local part = inst and partOf(inst)
+  if not part then return Vector3.new(0, 1, 0) end
+  return -part.CFrame.LookVector * 2 + Vector3.new(0, 1, 0)
+end
+
+local function returnToTreadmill()
+  local pos, inst = plotTreadmill()
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  if not pos or not root then return false end
+  if (root.Position - pos).Magnitude > 3 then
+    teleportNear(pos, pos, treadmillOffset(inst))
+    return true
+  end
+  return false
 end
 
 local function trainOnce()
-  local pos = plotTreadmill()
+  local pos, inst = plotTreadmill()
   if not pos then return false, "no treadmill" end
-  teleportNear(pos, pos, Vector3.new(0, 3, 0))
+  teleportNear(pos, pos, treadmillOffset(inst))
   local prompt = nearestPrompt({"TREADMILL", "TRAIN", "GYM", "WORKOUT"})
   local ok, note = false, "no prompt"
   if prompt then ok, note = firePrompt(prompt) end
   if not ok then ok = callPatterns({"requesttrain", "train", "treadmill", "training"}) end
-  pcall(resetCamera)
+  pcall(recenterCamera)
   return ok, ok and "training" or tostring(note)
 end
 
 local function killAuraOnce()
   local target = nearestTarget({"BOX", "CRATE", "PACKAGE", "CARTON"})
-  local cam = workspace.CurrentCamera
-  if not target or not cam then return false, "no box" end
-  local part = partOf(target)
-  local screen, visible = cam:WorldToScreenPoint(part.Position)
-  if not visible then return false, "box offscreen" end
-  local point = Vector2.new(screen.X, screen.Y)
+  if not target then return false, "no box" end
+  local ok, note = shootViaRemote(target)
+  if ok then return true, target.Name .. " remote" end
+  if not Config.ScreenClickFallback then return false, note end
+  local point = safeShootPoint(partOf(target))
+  if not point then return false, "unsafe point" end
   for _ = 1, Config.KillAuraBurst do
-    pcall(virtualClick, point, true)
+    pcall(virtualClick, point)
+    task.wait(0.03)
   end
-  task.wait(0.002)
-  pcall(resetCamera)
   return true, target.Name
 end
 
@@ -2879,7 +2922,7 @@ local function refreshEsp()
 end
 
 task.spawn(function()
-  local lastShoot, lastSteal, lastPlace, lastUpgrade, lastTrain, lastEquip = 0, 0, 0, 0, 0, 0
+  local lastShoot, lastSteal, lastPlace, lastUpgrade, lastTrain, lastEquip, lastReturn = 0, 0, 0, 0, 0, 0, 0
   while true do
     task.wait(0.1)
     local now = os.clock()
@@ -2907,6 +2950,10 @@ task.spawn(function()
         lastTrain = now
         local done, note = trainOnce()
         action("Train " .. (done and note or note))
+      end
+      if Config.AutoTrain and now - lastReturn >= 0.5 then
+        lastReturn = now
+        if returnToTreadmill() then action("Train returned") end
       end
       if Config.AutoEquipBest and now - lastEquip >= 1 then
         lastEquip = now
@@ -2965,7 +3012,9 @@ FarmSection:AddToggle({Title = "Auto Upgrade", Content = "Upgrades gun, speed, b
 
 UtilitySection:AddToggle({Title = "Instant Interact", Content = "Removes ProximityPrompt hold delay", Default = false, Callback = function(v) Config.InstantInteract = v; if v then pcall(applyInstantInteract) end end})
 UtilitySection:AddToggle({Title = "Auto Train", Content = "Teleports to the treadmill and trains", Default = false, Callback = function(v) Config.AutoTrain = v; if v then pcall(resetCamera) end end})
-CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires a rapid burst at the nearest box", Default = false, Callback = function(v) Config.KillAura = v; if v then pcall(resetCamera) end end})
+CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires a controlled burst at the nearest box", Default = false, Callback = function(v) Config.KillAura = v; if v then pcall(recenterCamera) end end})
+CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Uses screen clicks only if no shoot remote is known", Default = false, Callback = function(v) Config.ScreenClickFallback = v end})
+CombatSection:AddInput({Title = "Shoot remote", Content = "Exact remote name from Scan remotes", Default = "", Callback = function(v) Config.ShootRemoteName = v end})
 DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked animals to your plot", Default = false, Callback = function(v) Config.AutoDeliver = v end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
@@ -3010,8 +3059,8 @@ TuneSection:AddSlider({Title = "Steal delay", Content = "Seconds between steals"
 TuneSection:AddSlider({Title = "Place delay", Content = "Seconds between egg cycles", Increment = 0.5, Min = 1, Max = 30, Default = 3, Callback = function(v) Config.PlaceDelay = v end})
 TuneSection:AddSlider({Title = "Upgrade delay", Content = "Seconds between upgrade rounds", Increment = 1, Min = 1, Max = 120, Default = 10, Callback = function(v) Config.UpgradeDelay = v end})
 TuneSection:AddSlider({Title = "Train delay", Content = "Seconds between training rounds", Increment = 0.5, Min = 1, Max = 60, Default = 5, Callback = function(v) Config.TrainDelay = v end})
-TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.01, Max = 1, Default = 0.01, Callback = function(v) Config.KillAuraDelay = v end})
-TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 48, Default = 12, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
+TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.05, Min = 0.05, Max = 2, Default = 0.25, Callback = function(v) Config.KillAuraDelay = v end})
+TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 12, Default = 4, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
 TuneSection:AddSlider({Title = "Deliver height", Content = "Studs above plot ground", Increment = 0.1, Min = 0, Max = 5, Default = 0.6, Callback = function(v) Config.DeliverHeight = v end})
 TuneSection:AddSlider({Title = "ESP range", Content = "Maximum studs for ESP labels", Increment = 25, Min = 50, Max = 1000, Default = 250, Callback = function(v) Config.EspRange = v; pcall(refreshEsp) end})
 

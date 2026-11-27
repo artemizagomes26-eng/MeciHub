@@ -2284,12 +2284,17 @@ local Config = {
   KillAuraDelay = 0.06,
   EventKillAuraDelay = 0.02,
   KillAuraBurst = 8,
+  KillAuraBurstEvent = 12,
+  KillAuraWaitEvent = 0.004,
   ShootRemoteName = "",
+  EventShootRemoteName = "",
   ScreenClickFallback = false,
   AutoUpgrader = false,
   UpgraderDelay = 2,
   UpgradeReturnDelay = 0.6,
   UpgradeFlags = {Gun = true, Treadmill = true, Companion = true, Trail = true},
+  EggWhitelist = {},
+  PlaceSpot = nil,
   DeliverHeight = 0.6,
   EspRange = 250,
 }
@@ -2455,7 +2460,7 @@ local function positionOf(inst)
 end
 
 local function eventActive()
-  return #findTargets({"TURKEY", "MECH"}) > 0
+  return #findTargets({"TURKEY", "MECH", "TITAN", "BOSS"}) > 0
 end
 
 local function faceTarget(inst)
@@ -2576,6 +2581,31 @@ local function safeShootPoint(part)
   return point
 end
 
+local targetRemoteCache = {}
+local function findTargetRemote(target)
+  if not target then return nil end
+  local key = target:GetFullName()
+  local cached = targetRemoteCache[key]
+  if cached and cached.Parent then return cached end
+  local scope = target
+  for _ = 1, 4 do
+    if not scope then break end
+    for _, inst in ipairs(scope:GetChildren()) do
+      if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") or inst:IsA("UnreliableRemoteEvent") then
+        local name = string.lower(inst.Name)
+        if string.find(name, "shoot") or string.find(name, "fire") or string.find(name, "attack")
+          or string.find(name, "damage") or string.find(name, "hit") or string.find(name, "turkey")
+          or string.find(name, "mech") or string.find(name, "boss") or string.find(name, "event") then
+          targetRemoteCache[key] = inst
+          return inst
+        end
+      end
+    end
+    scope = scope.Parent
+  end
+  return nil
+end
+
 local function shootViaRemote(target)
   local detector = target:FindFirstChildWhichIsA("ClickDetector", true)
   if detector and type(fireclickdetector) == "function" then
@@ -2587,12 +2617,16 @@ local function shootViaRemote(target)
     local ok = firePrompt(prompt)
     if ok then return true, "prompt" end
   end
-  local patterns = {}
-  if Config.ShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.ShootRemoteName) end
-  for _, pattern in ipairs({"shoot", "fire", "attack", "crate", "box"}) do
-    patterns[#patterns + 1] = pattern
+  local remote = findTargetRemote(target)
+  if not remote then
+    local patterns = {}
+    if Config.EventShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.EventShootRemoteName) end
+    if Config.ShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.ShootRemoteName) end
+    for _, pattern in ipairs({"shoot", "fire", "attack", "crate", "box", "turkey", "mech", "boss", "event", "damage", "hit"}) do
+      patterns[#patterns + 1] = pattern
+    end
+    remote = findRemote(patterns)
   end
-  local remote = findRemote(patterns)
   if not remote then return false, "no shoot remote" end
   local part = partOf(target)
   return callRemote(remote, target.Name, part and part.Position or nil)
@@ -2699,21 +2733,27 @@ local function trainOnce()
   return ok, ok and "training" or tostring(note)
 end
 
-local function killAuraOnce()
-  local target = nearestTarget({"BOX", "CRATE", "PACKAGE", "CARTON"})
-  if not target then return false, "no box" end
+local function killAuraOnce(burst, waitTime)
+  local words = {"BOX", "CRATE", "PACKAGE", "CARTON"}
+  if eventActive() then
+    words = {"TURKEY", "TITAN", "MECH", "BOSS", "BOX", "CRATE", "PACKAGE", "CARTON"}
+  end
+  local target = nearestTarget(words)
+  if not target then return false, "no target" end
   local hits, lastNote = 0, "no shoot remote"
-  for _ = 1, Config.KillAuraBurst do
+  burst = burst or Config.KillAuraBurst
+  waitTime = waitTime or 0.008
+  for _ = 1, burst do
     pcall(faceTarget, target)
     local ok, note = shootViaRemote(target)
     if ok then hits, lastNote = hits + 1, note end
-    task.wait(0.008)
+    task.wait(waitTime)
   end
   if hits > 0 then return true, target.Name .. " x" .. hits .. " " .. lastNote end
   if not Config.ScreenClickFallback then return false, lastNote end
   local point = safeShootPoint(partOf(target))
   if not point then return false, "unsafe point" end
-  for _ = 1, Config.KillAuraBurst do
+  for _ = 1, burst do
     pcall(virtualClick, point)
     task.wait(0.01)
   end
@@ -2740,18 +2780,71 @@ local function inventoryUid()
   return nil
 end
 
+local function savePlaceSpot()
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  if not root then return false, "no character" end
+  Config.PlaceSpot = root.Position + root.CFrame.LookVector * 2
+  return true, tostring(Config.PlaceSpot)
+end
+
+local function eggMatchesWhitelist(inst)
+  if #Config.EggWhitelist == 0 then return true end
+  local name = string.upper(tostring(inst.Name))
+  local uid = string.upper(tostring(uidOf(inst) or ""))
+  for _, entry in ipairs(Config.EggWhitelist) do
+    local value = string.upper(tostring(entry))
+    if value == "*" or value == "ALL" then return true end
+    if string.find(name, value, 1, true) then return true end
+    if uid ~= "" and string.find(uid, value, 1, true) then return true end
+  end
+  return false
+end
+
+local function getWhitelistedEggs()
+  local list = {}
+  for _, holder in ipairs({Player:FindFirstChild("Backpack"), Player.Character}) do
+    if holder then
+      for _, tool in ipairs(holder:GetChildren()) do
+        local name = string.upper(tool.Name)
+        local isEgg = string.find(name, "EGG") or string.find(name, "OVO") or string.find(name, "CRATE") or string.find(name, "BOX")
+        if isEgg and eggMatchesWhitelist(tool) then list[#list + 1] = tool end
+      end
+    end
+  end
+  return list
+end
+
 local function placeHatchOnce()
-  local uid = inventoryUid()
-  if not uid then return false, "no egg uid" end
-  local okPlace = callPatterns({"requestplaceegg", "placeegg", "place"}, uid)
-  if not okPlace then return false, "place remote missing" end
-  task.wait(0.4)
-  local okHatch = callPatterns({"requesthatchegg", "hatchegg", "hatch"}, uid)
-  if not okHatch then return false, "hatch remote missing" end
-  task.wait(1)
-  callPatterns({"requestcompletehatchegg", "completehatch", "complete"}, uid)
-  callPatterns({"requestequip", "equip"}, uid)
-  return true, "egg queued"
+  local eggs = getWhitelistedEggs()
+  if #eggs == 0 then return false, "no whitelisted egg" end
+  local spot = Config.PlaceSpot
+  if not spot then
+    local plot = myPlot and myPlot()
+    local plotPart = plot and partOf(plot)
+    spot = plotPart and (plotPart.CFrame.Position + plotPart.CFrame.LookVector * 6) or nil
+  end
+  if not spot then return false, "no place spot" end
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  if not root then return false, "no character" end
+  teleportNear(spot, spot, Vector3.new(0, 2, 0))
+  local placed = 0
+  for _, egg in ipairs(eggs) do
+    local uid = uidOf(egg) or egg.Name
+    local okPlace = callPatterns({"requestplaceegg", "placeegg", "place"}, uid, spot)
+    if not okPlace then okPlace = callPatterns({"requestplaceegg", "placeegg", "place"}, uid) end
+    if okPlace then
+      placed = placed + 1
+      task.wait(0.2)
+      local okHatch = callPatterns({"requesthatchegg", "hatchegg", "hatch"}, uid)
+      if okHatch then
+        task.wait(0.5)
+        callPatterns({"requestcompletehatchegg", "completehatch", "complete"}, uid)
+        callPatterns({"requestequip", "equip"}, uid)
+      end
+    end
+  end
+  if placed == 0 then return false, "place remote missing" end
+  return true, tostring(placed) .. " eggs"
 end
 
 local function upgradeOnce()
@@ -3114,11 +3207,14 @@ task.spawn(function()
   local lastKill = 0
   while true do
     task.wait(0.05)
-    local delay = eventActive() and Config.EventKillAuraDelay or Config.KillAuraDelay
+    local isEvent = eventActive()
+    local delay = isEvent and Config.EventKillAuraDelay or Config.KillAuraDelay
+    local burst = isEvent and Config.KillAuraBurstEvent or Config.KillAuraBurst
+    local waitTime = isEvent and Config.KillAuraWaitEvent or 0.008
     if Config.KillAura and os.clock() - lastKill >= delay then
       lastKill = os.clock()
       pcall(function()
-        local done, note = killAuraOnce()
+        local done, note = killAuraOnce(burst, waitTime)
         if done then action("Kill aura " .. note) end
       end)
     end
@@ -3169,13 +3265,28 @@ end)
 FarmSection:AddToggle({Title = "Auto Shoot", Content = "Shoots the nearest box or screen center", Default = false, Callback = function(v) Config.AutoShoot = v end})
 FarmSection:AddToggle({Title = "Auto Steal", Content = "Fires the nearest egg ProximityPrompt", Default = false, Callback = function(v) Config.AutoSteal = v; if v then pcall(resetCamera) end end})
 FarmSection:AddToggle({Title = "Auto Place/Hatch", Content = "Places, hatches and equips eggs", Default = false, Callback = function(v) Config.AutoPlaceHatch = v end})
+FarmSection:AddButton({Title = "Save place spot", Content = "Stand in your corral where eggs should go", Callback = function()
+  local done, note = savePlaceSpot()
+  action("Place spot " .. (done and note or note))
+end})
+FarmSection:AddInput({Title = "Egg whitelist", Content = "Egg name or UID; leave empty for all", Default = "", Callback = function(v)
+  if v and v ~= "" then
+    Config.EggWhitelist[#Config.EggWhitelist + 1] = v
+    action("Egg whitelisted: " .. v)
+  end
+end})
+FarmSection:AddButton({Title = "Clear egg whitelist", Content = "Allow every egg again", Callback = function()
+  Config.EggWhitelist = {}
+  action("Egg whitelist cleared")
+end})
 FarmSection:AddToggle({Title = "Auto Upgrade", Content = "Upgrades gun, speed, base and claims", Default = false, Callback = function(v) Config.AutoUpgrade = v end})
 
 UtilitySection:AddToggle({Title = "Instant Interact", Content = "Removes ProximityPrompt hold delay", Default = false, Callback = function(v) Config.InstantInteract = v; if v then pcall(applyInstantInteract) end end})
 UtilitySection:AddToggle({Title = "Auto Train", Content = "Teleports to the treadmill and trains", Default = false, Callback = function(v) Config.AutoTrain = v; if v then pcall(resetCamera) end end})
-CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires a controlled burst at the nearest box", Default = false, Callback = function(v) Config.KillAura = v; if v then pcall(recenterCamera) end end})
+CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires at boxes and Turkey/Mech/Titan events", Default = false, Callback = function(v) Config.KillAura = v; if v then pcall(recenterCamera) end end})
 CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Uses screen clicks only if no shoot remote is known", Default = false, Callback = function(v) Config.ScreenClickFallback = v end})
 CombatSection:AddInput({Title = "Shoot remote", Content = "Exact remote name from Scan remotes", Default = "", Callback = function(v) Config.ShootRemoteName = v end})
+CombatSection:AddInput({Title = "Event shoot remote", Content = "Exact Turkey/Mech/Titan remote, optional", Default = "", Callback = function(v) Config.EventShootRemoteName = v end})
 DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked animals to your plot", Default = false, Callback = function(v) Config.AutoDeliver = v end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
@@ -3208,8 +3319,12 @@ QuickSection:AddButton({Title = "Train once", Content = "Uses the nearest treadm
   local done, note = trainOnce()
   action("Train " .. (done and note or note))
 end})
-QuickSection:AddButton({Title = "Kill aura once", Content = "Fires a rapid burst at one box", Callback = function()
-  local done, note = killAuraOnce()
+QuickSection:AddButton({Title = "Kill aura once", Content = "Fires a rapid burst at the nearest target", Callback = function()
+  local isEvent = eventActive()
+  local done, note = killAuraOnce(
+    isEvent and Config.KillAuraBurstEvent or Config.KillAuraBurst,
+    isEvent and Config.KillAuraWaitEvent or 0.008
+  )
   action("Kill aura " .. (done and note or note))
 end})
 QuickSection:AddButton({Title = "Equip best", Content = "Equips the highest rate animal", Callback = function()
@@ -3218,7 +3333,7 @@ QuickSection:AddButton({Title = "Equip best", Content = "Equips the highest rate
 end})
 QuickSection:AddButton({Title = "Scan remotes", Content = "Prints every remote in ReplicatedStorage", Callback = function()
   local names = listRemotes()
-  local message = "remotes=" .. #names .. " boxes=" .. #findTargets({"BOX", "CRATE", "PACKAGE"}) .. " eggs=" .. #findTargets({"EGG", "NEST"})
+  local message = "remotes=" .. #names .. " boxes=" .. #findTargets({"BOX", "CRATE", "PACKAGE"}) .. " events=" .. #findTargets({"TURKEY", "MECH", "TITAN", "BOSS"}) .. " eggs=" .. #findTargets({"EGG", "NEST"})
   print("[Meci Hub] " .. message)
   print("[Meci Hub] " .. table.concat(names, "\n"))
   status("Scan", message)
@@ -3238,6 +3353,8 @@ TuneSection:AddSlider({Title = "Train delay", Content = "Seconds between trainin
 TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.02, Max = 2, Default = 0.06, Callback = function(v) Config.KillAuraDelay = v end})
 TuneSection:AddSlider({Title = "Event kill aura", Content = "Faster delay during Turkey/Mech events", Increment = 0.005, Min = 0.01, Max = 1, Default = 0.02, Callback = function(v) Config.EventKillAuraDelay = v end})
 TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 24, Default = 8, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
+TuneSection:AddSlider({Title = "Event aura shots", Content = "Shots per event burst", Increment = 1, Min = 1, Max = 32, Default = 12, Callback = function(v) Config.KillAuraBurstEvent = math.floor(v) end})
+TuneSection:AddSlider({Title = "Event shot wait", Content = "Seconds between event shots", Increment = 0.002, Min = 0.002, Max = 0.2, Default = 0.004, Callback = function(v) Config.KillAuraWaitEvent = v end})
 TuneSection:AddSlider({Title = "Upgrader delay", Content = "Seconds between upgrade checks", Increment = 0.5, Min = 0.5, Max = 30, Default = 2, Callback = function(v) Config.UpgraderDelay = v end})
 TuneSection:AddSlider({Title = "Return delay", Content = "Seconds before returning after buying", Increment = 0.1, Min = 0.1, Max = 5, Default = 0.6, Callback = function(v) Config.UpgradeReturnDelay = v end})
 TuneSection:AddSlider({Title = "Deliver height", Content = "Studs above plot ground", Increment = 0.1, Min = 0, Max = 5, Default = 0.6, Callback = function(v) Config.DeliverHeight = v end})
@@ -3245,7 +3362,7 @@ TuneSection:AddSlider({Title = "ESP range", Content = "Maximum studs for ESP lab
 
 StatusSection:AddParagraph({
   Title = "Architecture",
-  Content = "Meci Hub | game: Shoot to Steal an Egg | dynamic remote discovery | ESP shows animal and money rate",
+  Content = "Meci Hub | game: Shoot to Steal an Egg | dynamic remotes | event kill aura | egg whitelist and fixed place spot | ESP",
 })
 
 pcall(function()

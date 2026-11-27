@@ -2281,9 +2281,9 @@ local Config = {
   PlaceDelay = 3,
   UpgradeDelay = 10,
   TrainDelay = 5,
-  KillAuraDelay = 0.12,
-  EventKillAuraDelay = 0.045,
-  KillAuraBurst = 4,
+  KillAuraDelay = 0.06,
+  EventKillAuraDelay = 0.02,
+  KillAuraBurst = 8,
   ShootRemoteName = "",
   ScreenClickFallback = false,
   AutoUpgrader = false,
@@ -2577,6 +2577,16 @@ local function safeShootPoint(part)
 end
 
 local function shootViaRemote(target)
+  local detector = target:FindFirstChildWhichIsA("ClickDetector", true)
+  if detector and type(fireclickdetector) == "function" then
+    local ok = pcall(fireclickdetector, detector)
+    if ok then return true, "click detector" end
+  end
+  local prompt = target:FindFirstChildWhichIsA("ProximityPrompt", true)
+  if prompt then
+    local ok = firePrompt(prompt)
+    if ok then return true, "prompt" end
+  end
   local patterns = {}
   if Config.ShootRemoteName ~= "" then patterns[#patterns + 1] = string.lower(Config.ShootRemoteName) end
   for _, pattern in ipairs({"shoot", "fire", "attack", "crate", "box"}) do
@@ -2692,15 +2702,20 @@ end
 local function killAuraOnce()
   local target = nearestTarget({"BOX", "CRATE", "PACKAGE", "CARTON"})
   if not target then return false, "no box" end
-  pcall(faceTarget, target)
-  local ok, note = shootViaRemote(target)
-  if ok then return true, target.Name .. " remote" end
-  if not Config.ScreenClickFallback then return false, note end
+  local hits, lastNote = 0, "no shoot remote"
+  for _ = 1, Config.KillAuraBurst do
+    pcall(faceTarget, target)
+    local ok, note = shootViaRemote(target)
+    if ok then hits, lastNote = hits + 1, note end
+    task.wait(0.008)
+  end
+  if hits > 0 then return true, target.Name .. " x" .. hits .. " " .. lastNote end
+  if not Config.ScreenClickFallback then return false, lastNote end
   local point = safeShootPoint(partOf(target))
   if not point then return false, "unsafe point" end
   for _ = 1, Config.KillAuraBurst do
     pcall(virtualClick, point)
-    task.wait(0.03)
+    task.wait(0.01)
   end
   return true, target.Name
 end
@@ -2755,8 +2770,8 @@ local function upgradeOnce()
 end
 
 local UpgradeItems = {
-  {Key = "Gun", Name = "Arma", Words = {"GUN", "WEAPON", "RIFLE", "SHOOT"}, Patterns = {"buygun", "purchasegun", "upgradegun", "gunupgrade"}},
-  {Key = "Treadmill", Name = "Esteira", Words = {"TREADMILL", "TRAIN", "GYM"}, Patterns = {"buytreadmill", "purchasetreadmill", "upgradespeed", "treadmill"}},
+  {Key = "Gun", Name = "Gun", Words = {"GUN", "WEAPON", "RIFLE", "SHOOT"}, Patterns = {"buygun", "purchasegun", "upgradegun", "gunupgrade"}},
+  {Key = "Treadmill", Name = "Treadmill", Words = {"TREADMILL", "TRAIN", "GYM"}, Patterns = {"buytreadmill", "purchasetreadmill", "upgradespeed", "treadmill"}},
   {Key = "Companion", Name = "Companion", Words = {"COMPANION", "PET", "HELPER", "BUDDY"}, Patterns = {"buycompanion", "purchasecompanion", "upgradepet", "companion"}},
   {Key = "Trail", Name = "Trail", Words = {"TRAIL", "EFFECT", "COSMETIC"}, Patterns = {"buytrail", "purchasetrail", "upgradetrail", "trail"}},
 }
@@ -3165,8 +3180,8 @@ DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked anim
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
 UpgradeSection:AddToggle({Title = "Auto Upgrader", Content = "Buys affordable upgrades and returns", Default = false, Callback = function(v) Config.AutoUpgrader = v; if v then pcall(saveOriginalPosition) end end})
-UpgradeSection:AddToggle({Title = "Arma", Content = "Upgrades the gun when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Gun = v end})
-UpgradeSection:AddToggle({Title = "Esteira", Content = "Upgrades the treadmill when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Treadmill = v end})
+UpgradeSection:AddToggle({Title = "Gun", Content = "Upgrades the gun when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Gun = v end})
+UpgradeSection:AddToggle({Title = "Treadmill", Content = "Upgrades the treadmill when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Treadmill = v end})
 UpgradeSection:AddToggle({Title = "Companion", Content = "Upgrades the companion when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Companion = v end})
 UpgradeSection:AddToggle({Title = "Trail", Content = "Upgrades the trail when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Trail = v end})
 UpgradeSection:AddButton({Title = "Save return position", Content = "Saves your current position", Callback = function() action(saveOriginalPosition() and "Position saved" or "No character") end})
@@ -3220,9 +3235,9 @@ TuneSection:AddSlider({Title = "Steal delay", Content = "Seconds between steals"
 TuneSection:AddSlider({Title = "Place delay", Content = "Seconds between egg cycles", Increment = 0.5, Min = 1, Max = 30, Default = 3, Callback = function(v) Config.PlaceDelay = v end})
 TuneSection:AddSlider({Title = "Upgrade delay", Content = "Seconds between upgrade rounds", Increment = 1, Min = 1, Max = 120, Default = 10, Callback = function(v) Config.UpgradeDelay = v end})
 TuneSection:AddSlider({Title = "Train delay", Content = "Seconds between training rounds", Increment = 0.5, Min = 1, Max = 60, Default = 5, Callback = function(v) Config.TrainDelay = v end})
-TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.05, Max = 2, Default = 0.12, Callback = function(v) Config.KillAuraDelay = v end})
-TuneSection:AddSlider({Title = "Event kill aura", Content = "Faster delay during Turkey/Mech events", Increment = 0.005, Min = 0.02, Max = 1, Default = 0.045, Callback = function(v) Config.EventKillAuraDelay = v end})
-TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 12, Default = 4, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
+TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.02, Max = 2, Default = 0.06, Callback = function(v) Config.KillAuraDelay = v end})
+TuneSection:AddSlider({Title = "Event kill aura", Content = "Faster delay during Turkey/Mech events", Increment = 0.005, Min = 0.01, Max = 1, Default = 0.02, Callback = function(v) Config.EventKillAuraDelay = v end})
+TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 24, Default = 8, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
 TuneSection:AddSlider({Title = "Upgrader delay", Content = "Seconds between upgrade checks", Increment = 0.5, Min = 0.5, Max = 30, Default = 2, Callback = function(v) Config.UpgraderDelay = v end})
 TuneSection:AddSlider({Title = "Return delay", Content = "Seconds before returning after buying", Increment = 0.1, Min = 0.1, Max = 5, Default = 0.6, Callback = function(v) Config.UpgradeReturnDelay = v end})
 TuneSection:AddSlider({Title = "Deliver height", Content = "Studs above plot ground", Increment = 0.1, Min = 0, Max = 5, Default = 0.6, Callback = function(v) Config.DeliverHeight = v end})

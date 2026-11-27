@@ -3372,7 +3372,7 @@ local function carriedAnimal()
   local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
   if not root then return nil end
   local best, distance = nil, 15
-  for _, inst in ipairs(findTargets({"ANIMAL", "PET", "CARRY", "PICKED", "BOUGHT"})) do
+  for _, inst in ipairs(findTargets({"ANIMAL", "PET", "EGG", "OVO", "CARRY", "PICKED", "BOUGHT"})) do
     if not belongsTo(inst, Player.Character) then
       local pos = positionOf(inst)
       if pos then
@@ -3386,10 +3386,13 @@ end
 
 local function looksLikeAnimal(inst)
   local name = string.upper(inst.Name)
-  for _, word in ipairs({"ANIMAL", "PET", "EGG", "CARRY", "PICKED", "BOUGHT"}) do
+  for _, word in ipairs({"ANIMAL", "PET", "EGG", "OVO", "CARRY", "PICKED", "BOUGHT"}) do
     if string.find(name, word, 1, true) then return true end
   end
-  if uidOf(inst) then return true end
+  for _, key in ipairs({"Animal", "Pet", "Egg", "AnimalUid", "PetUid", "EggUid"}) do
+    local value = inst:GetAttribute(key)
+    if value ~= nil and tostring(value) ~= "" then return true end
+  end
   local animal = targetInfo(inst)
   if animal and animal ~= inst.Name then return true end
   return false
@@ -3718,7 +3721,7 @@ EventSection:AddButton({Title = "Stop event", Content = "Stops the current event
 end})
 EventSection:AddSlider({Title = "Float height", Content = "Studs above the torso/head", Increment = 1, Min = 2, Max = 20, Default = 7, Callback = function(v) Config.EventFloatHeight = v end})
 DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked animals to your plot", Default = false, Callback = function(v) Config.AutoDeliver = v end})
-DeliverySection:AddToggle({Title = "Plot on pickup", Content = "Teleports you to your plot when holding an animal", Default = false, Callback = function(v) Config.AutoPlotOnPickup = v; if not v then lastPickedSignature = nil end end})
+DeliverySection:AddToggle({Title = "Plot on pickup", Content = "Teleports you to your plot only when holding an animal or egg", Default = false, Callback = function(v) Config.AutoPlotOnPickup = v; if not v then lastPickedSignature = nil end end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
 UpgradeSection:AddToggle({Title = "Auto Upgrader", Content = "Buys affordable upgrades and returns", Default = false, Callback = function(v) Config.AutoUpgrader = v; if v then pcall(saveOriginalPosition) end end})

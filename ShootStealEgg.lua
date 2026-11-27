@@ -2263,6 +2263,130 @@ local PlayerGui = Player:WaitForChild("PlayerGui")
 local CoreGui = game:GetService("CoreGui")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
+local Genv = (getgenv and getgenv()) or _G
+local function askPrivateServerLink(defaultLink)
+  local answer = nil
+  local done = false
+  local gui = Instance.new("ScreenGui")
+  gui.Name = "MeciHubPrivateServerLink"
+  gui.ResetOnSpawn = false
+  gui.IgnoreGuiInset = true
+  gui.DisplayOrder = 999
+  gui.Parent = PlayerGui
+  local frame = Instance.new("Frame")
+  frame.Name = "Prompt"
+  frame.Size = UDim2.fromOffset(460, 190)
+  frame.Position = UDim2.new(0.5, -230, 0.5, -95)
+  frame.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+  frame.BorderSizePixel = 0
+  frame.Parent = gui
+  local corner = Instance.new("UICorner")
+  corner.CornerRadius = UDim.new(0, 8)
+  corner.Parent = frame
+  local title = Instance.new("TextLabel")
+  title.Size = UDim2.new(1, -24, 0, 30)
+  title.Position = UDim2.new(0, 12, 0, 12)
+  title.BackgroundTransparency = 1
+  title.Font = Enum.Font.SourceSansSemibold
+  title.Text = "Meci Hub - Private Server Link"
+  title.TextColor3 = Color3.fromRGB(255, 255, 255)
+  title.TextSize = 18
+  title.TextXAlignment = Enum.TextXAlignment.Left
+  title.Parent = frame
+  local hint = Instance.new("TextLabel")
+  hint.Size = UDim2.new(1, -24, 0, 28)
+  hint.Position = UDim2.new(0, 12, 0, 44)
+  hint.BackgroundTransparency = 1
+  hint.Font = Enum.Font.SourceSans
+  hint.Text = "Enter the private server link to load the script."
+  hint.TextColor3 = Color3.fromRGB(200, 200, 210)
+  hint.TextSize = 13
+  hint.TextXAlignment = Enum.TextXAlignment.Left
+  hint.Parent = frame
+  local box = Instance.new("TextBox")
+  box.Size = UDim2.new(1, -24, 0, 40)
+  box.Position = UDim2.new(0, 12, 0, 78)
+  box.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+  box.BorderSizePixel = 0
+  box.Font = Enum.Font.SourceSans
+  box.PlaceholderColor3 = Color3.fromRGB(130, 130, 145)
+  box.PlaceholderText = "https://www.roblox.com/games/82505988558777/...privateServerLinkCode=..."
+  box.Text = defaultLink or ""
+  box.TextColor3 = Color3.fromRGB(255, 255, 255)
+  box.TextSize = 13
+  box.ClearTextOnFocus = false
+  box.Parent = frame
+  local boxCorner = Instance.new("UICorner")
+  boxCorner.CornerRadius = UDim.new(0, 6)
+  boxCorner.Parent = box
+  local save = Instance.new("TextButton")
+  save.Size = UDim2.fromOffset(160, 38)
+  save.Position = UDim2.new(0, 12, 1, -50)
+  save.BackgroundColor3 = Color3.fromRGB(70, 140, 255)
+  save.BorderSizePixel = 0
+  save.Font = Enum.Font.SourceSansSemibold
+  save.Text = "Save link"
+  save.TextColor3 = Color3.fromRGB(255, 255, 255)
+  save.TextSize = 14
+  save.Parent = frame
+  local saveCorner = Instance.new("UICorner")
+  saveCorner.CornerRadius = UDim.new(0, 6)
+  saveCorner.Parent = save
+  local cancel = Instance.new("TextButton")
+  cancel.Size = UDim2.fromOffset(160, 38)
+  cancel.Position = UDim2.new(1, -172, 1, -50)
+  cancel.BackgroundColor3 = Color3.fromRGB(60, 60, 72)
+  cancel.BorderSizePixel = 0
+  cancel.Font = Enum.Font.SourceSansSemibold
+  cancel.Text = "Cancel"
+  cancel.TextColor3 = Color3.fromRGB(255, 255, 255)
+  cancel.TextSize = 14
+  cancel.Parent = frame
+  local cancelCorner = Instance.new("UICorner")
+  cancelCorner.CornerRadius = UDim.new(0, 6)
+  cancelCorner.Parent = cancel
+  save.MouseButton1Click:Connect(function()
+    local value = box.Text
+    if not value or value == "" then
+      hint.Text = "Enter the link or cancel to stop the script."
+      hint.TextColor3 = Color3.fromRGB(255, 120, 120)
+      return
+    end
+    answer = value
+    done = true
+    gui:Destroy()
+  end)
+  cancel.MouseButton1Click:Connect(function()
+    answer = nil
+    done = true
+    gui:Destroy()
+  end)
+  repeat task.wait() until done
+  return answer
+end
+
+local suggestedLink = Genv.MeciHubPrivateServerLink
+if (not suggestedLink or suggestedLink == "") and type(getclipboard) == "function" then
+  pcall(function()
+    local clip = getclipboard()
+    if clip and (string.find(clip, "privateServerLinkCode") or string.find(clip, "linkCode")) then suggestedLink = clip end
+  end)
+end
+
+local PrivateServerLink = askPrivateServerLink(suggestedLink)
+if not PrivateServerLink or PrivateServerLink == "" then
+  pcall(function()
+    Genv.MeciHubShootLoaded = false
+    Genv.MeciHubShootForceReload = false
+    for _, gui in ipairs(PlayerGui:GetChildren()) do
+      if string.find(gui.Name, "Meci Hub", 1, true) then gui:Destroy() end
+    end
+  end)
+  warn("[Meci Hub] Private server link required. Script stopped.")
+  return
+end
+Genv.MeciHubPrivateServerLink = PrivateServerLink
+
 local Config = {
   AutoShoot = false,
   AutoSteal = false,
@@ -2295,7 +2419,7 @@ local Config = {
   UpgradeFlags = {Gun = true, Treadmill = true, Companion = true, Trail = true},
   EggWhitelist = {},
   PlaceSpot = nil,
-  PrivateServerLink = "",
+  PrivateServerLink = PrivateServerLink,
   AutoEvent = false,
   EventChoice = "All",
   EventFloatHeight = 7,
@@ -2388,7 +2512,6 @@ pcall(function()
   captureHookOk = oldNamecall ~= nil
 end)
 
-local Genv = (getgenv and getgenv()) or _G
 local function setPrivateServerLink(link)
   local value = tostring(link or "")
   Config.PrivateServerLink = value
@@ -2397,115 +2520,10 @@ local function setPrivateServerLink(link)
   local place = string.match(value, "placeId=(%d+)") or string.match(value, "/games/(%d+)")
   local code = string.match(value, "privateServerLinkCode=([^&]+)") or string.match(value, "linkCode=([^&]+)")
   if place and tonumber(place) ~= game.PlaceId then
-    action("PV link PlaceId " .. place .. " != " .. tostring(game.PlaceId))
+    action("Private link PlaceId " .. place .. " != " .. tostring(game.PlaceId))
   else
-    action("PV link saved" .. (code and " code=" .. string.sub(code, 1, 8) .. "..." or ""))
+    action("Private link saved" .. (code and " code=" .. string.sub(code, 1, 8) .. "..." or ""))
   end
-end
-
-pcall(function()
-  local initial = Genv.MeciHubPrivateServerLink
-  if (not initial or initial == "") and type(getclipboard) == "function" then
-    local clip = getclipboard()
-    if clip and (string.find(clip, "privateServerLinkCode") or string.find(clip, "linkCode")) then initial = clip end
-  end
-  if initial and initial ~= "" then setPrivateServerLink(initial) end
-end)
-
-local privateLinkGui = nil
-local function showPrivateLinkPrompt()
-  if privateLinkGui and privateLinkGui.Parent then return end
-  local gui = Instance.new("ScreenGui")
-  gui.Name = "MeciHubPrivateServerLink"
-  gui.ResetOnSpawn = false
-  gui.IgnoreGuiInset = true
-  gui.DisplayOrder = 999
-  gui.Parent = PlayerGui
-  privateLinkGui = gui
-  local frame = Instance.new("Frame")
-  frame.Name = "Prompt"
-  frame.Size = UDim2.fromOffset(460, 190)
-  frame.Position = UDim2.new(0.5, -230, 0.5, -95)
-  frame.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
-  frame.BorderSizePixel = 0
-  frame.Parent = gui
-  local corner = Instance.new("UICorner")
-  corner.CornerRadius = UDim.new(0, 8)
-  corner.Parent = frame
-  local title = Instance.new("TextLabel")
-  title.Size = UDim2.new(1, -24, 0, 30)
-  title.Position = UDim2.new(0, 12, 0, 12)
-  title.BackgroundTransparency = 1
-  title.Font = Enum.Font.SourceSansSemibold
-  title.Text = "Meci Hub - Private Server Link"
-  title.TextColor3 = Color3.fromRGB(255, 255, 255)
-  title.TextSize = 18
-  title.TextXAlignment = Enum.TextXAlignment.Left
-  title.Parent = frame
-  local hint = Instance.new("TextLabel")
-  hint.Size = UDim2.new(1, -24, 0, 28)
-  hint.Position = UDim2.new(0, 12, 0, 44)
-  hint.BackgroundTransparency = 1
-  hint.Font = Enum.Font.SourceSans
-  hint.Text = "Cole o link do servidor privado para usar os eventos."
-  hint.TextColor3 = Color3.fromRGB(200, 200, 210)
-  hint.TextSize = 13
-  hint.TextXAlignment = Enum.TextXAlignment.Left
-  hint.Parent = frame
-  local box = Instance.new("TextBox")
-  box.Size = UDim2.new(1, -24, 0, 40)
-  box.Position = UDim2.new(0, 12, 0, 78)
-  box.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
-  box.BorderSizePixel = 0
-  box.Font = Enum.Font.SourceSans
-  box.PlaceholderColor3 = Color3.fromRGB(130, 130, 145)
-  box.PlaceholderText = "https://www.roblox.com/games/82505988558777/...privateServerLinkCode=..."
-  box.Text = Config.PrivateServerLink
-  box.TextColor3 = Color3.fromRGB(255, 255, 255)
-  box.TextSize = 13
-  box.ClearTextOnFocus = false
-  box.Parent = frame
-  local boxCorner = Instance.new("UICorner")
-  boxCorner.CornerRadius = UDim.new(0, 6)
-  boxCorner.Parent = box
-  local save = Instance.new("TextButton")
-  save.Size = UDim2.fromOffset(160, 38)
-  save.Position = UDim2.new(0, 12, 1, -50)
-  save.BackgroundColor3 = Color3.fromRGB(70, 140, 255)
-  save.BorderSizePixel = 0
-  save.Font = Enum.Font.SourceSansSemibold
-  save.Text = "Salvar link"
-  save.TextColor3 = Color3.fromRGB(255, 255, 255)
-  save.TextSize = 14
-  save.Parent = frame
-  local saveCorner = Instance.new("UICorner")
-  saveCorner.CornerRadius = UDim.new(0, 6)
-  saveCorner.Parent = save
-  local skip = Instance.new("TextButton")
-  skip.Size = UDim2.fromOffset(160, 38)
-  skip.Position = UDim2.new(1, -172, 1, -50)
-  skip.BackgroundColor3 = Color3.fromRGB(60, 60, 72)
-  skip.BorderSizePixel = 0
-  skip.Font = Enum.Font.SourceSansSemibold
-  skip.Text = "Usar sem link"
-  skip.TextColor3 = Color3.fromRGB(255, 255, 255)
-  skip.TextSize = 14
-  skip.Parent = frame
-  local skipCorner = Instance.new("UICorner")
-  skipCorner.CornerRadius = UDim.new(0, 6)
-  skipCorner.Parent = skip
-  save.MouseButton1Click:Connect(function()
-    local value = box.Text
-    if not value or value == "" then action("Cole o link do servidor PV") return end
-    setPrivateServerLink(value)
-    gui:Destroy()
-    if privateLinkGui == gui then privateLinkGui = nil end
-  end)
-  skip.MouseButton1Click:Connect(function()
-    gui:Destroy()
-    if privateLinkGui == gui then privateLinkGui = nil end
-    action("PV link ignorado")
-  end)
 end
 
 local function callRemote(remote, ...)
@@ -3630,7 +3648,7 @@ CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Clicks the 
 CombatSection:AddInput({Title = "Shoot remote", Content = "Exact remote name from Scan remotes", Default = "", Callback = function(v) Config.ShootRemoteName = v end})
 CombatSection:AddInput({Title = "Event shoot remote", Content = "Exact Turkey/Mech/Titan remote, optional", Default = "", Callback = function(v) Config.EventShootRemoteName = v end})
 EventSection:AddInput({Title = "Private server link", Content = "Paste the private server link", Default = Config.PrivateServerLink, Callback = setPrivateServerLink})
-EventSection:AddDropdown({Title = "Event choice", Content = "Which event to complete", Multi = false, Options = {"All", "Titan Mech", "Mech", "Turkey"}, Default = "All", Callback = function(v)
+EventSection:AddDropdown({Title = "Event choice", Content = "Which event to complete", Multi = false, Options = {"All", "Titan Mech", "Mech", "Turkey"}, Default = {"All"}, Callback = function(v)
   if type(v) == "table" then
     Config.EventChoice = v[1] or "All"
   else
@@ -3753,6 +3771,4 @@ pcall(function()
   })
 end)
 
-pcall(showPrivateLinkPrompt)
-
-status("Ready", "Link PV na janela aberta. Ative Do events para começar.")
+status("Ready", "Private server link saved. Enable Do events to start.")

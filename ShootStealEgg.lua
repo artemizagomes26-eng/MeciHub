@@ -2396,6 +2396,7 @@ local Config = {
   AutoTrain = false,
   KillAura = false,
   AutoDeliver = false,
+  AutoPlotOnPickup = false,
   AutoEquipBest = false,
   EspBox = false,
   EspEgg = false,
@@ -2430,6 +2431,7 @@ local Config = {
 local RemoteCache = {}
 local espObjects = {}
 local lastInventorySignature = ""
+local lastPickedSignature = nil
 local myPlot = nil
 local captureActive = false
 local capturedRemote = nil
@@ -3382,6 +3384,48 @@ local function carriedAnimal()
   return best
 end
 
+local function looksLikeAnimal(inst)
+  local name = string.upper(inst.Name)
+  for _, word in ipairs({"ANIMAL", "PET", "EGG", "CARRY", "PICKED", "BOUGHT"}) do
+    if string.find(name, word, 1, true) then return true end
+  end
+  if uidOf(inst) then return true end
+  local animal = targetInfo(inst)
+  if animal and animal ~= inst.Name then return true end
+  return false
+end
+
+local function heldAnimal()
+  local character = Player.Character
+  if not character then return nil end
+  for _, tool in ipairs(character:GetChildren()) do
+    if (tool:IsA("Tool") or tool:IsA("Model")) and looksLikeAnimal(tool) then return tool end
+  end
+  for _, inst in ipairs(character:GetDescendants()) do
+    if looksLikeAnimal(inst) then return inst end
+  end
+  return carriedAnimal()
+end
+
+local function teleportToPlotOnPickup()
+  if not Config.AutoPlotOnPickup then return false end
+  local animal = heldAnimal()
+  if not animal then
+    lastPickedSignature = nil
+    return false
+  end
+  local plot = myPlot()
+  local plotPos = plot and positionOf(plot)
+  if not plotPos then return false end
+  local signature = animal.Name .. ":" .. tostring(uidOf(animal) or "") .. ":" .. animal:GetFullName()
+  if signature == lastPickedSignature then return false end
+  lastPickedSignature = signature
+  local offset = Vector3.new(0, Config.DeliverHeight + 2, 0)
+  local done = teleportNear(plotPos, plotPos, offset)
+  action(done and ("Teleported to plot with " .. animal.Name) or "Plot teleport failed")
+  return done
+end
+
 local function deliverTick(dt)
   if not Config.AutoDeliver then return false end
   local animal = carriedAnimal()
@@ -3554,6 +3598,13 @@ end)
 
 task.spawn(function()
   while true do
+    task.wait(0.2)
+    pcall(teleportToPlotOnPickup)
+  end
+end)
+
+task.spawn(function()
+  while true do
     task.wait(0.5)
     if Config.AutoEvent and not eventBusy and not activeEventTarget then
       local target = findSelectedEvent()
@@ -3667,6 +3718,7 @@ EventSection:AddButton({Title = "Stop event", Content = "Stops the current event
 end})
 EventSection:AddSlider({Title = "Float height", Content = "Studs above the torso/head", Increment = 1, Min = 2, Max = 20, Default = 7, Callback = function(v) Config.EventFloatHeight = v end})
 DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked animals to your plot", Default = false, Callback = function(v) Config.AutoDeliver = v end})
+DeliverySection:AddToggle({Title = "Plot on pickup", Content = "Teleports you to your plot when holding an animal", Default = false, Callback = function(v) Config.AutoPlotOnPickup = v; if not v then lastPickedSignature = nil end end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
 UpgradeSection:AddToggle({Title = "Auto Upgrader", Content = "Buys affordable upgrades and returns", Default = false, Callback = function(v) Config.AutoUpgrader = v; if v then pcall(saveOriginalPosition) end end})

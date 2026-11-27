@@ -2281,8 +2281,8 @@ local Config = {
   PlaceDelay = 3,
   UpgradeDelay = 10,
   TrainDelay = 5,
-  KillAuraDelay = 0.08,
-  KillAuraBurst = 8,
+  KillAuraDelay = 0.01,
+  KillAuraBurst = 12,
   DeliverHeight = 0.6,
   EspRange = 250,
 }
@@ -2290,6 +2290,7 @@ local Config = {
 local RemoteCache = {}
 local espObjects = {}
 local lastInventorySignature = ""
+local myPlot = nil
 
 local Window = Speed_Library:CreateWindow({
   Title = "Meci Hub",
@@ -2409,16 +2410,27 @@ local function isTarget(inst, words)
   return false
 end
 
+local targetCache = {}
 local function findTargets(words)
-  local list, seen = {}, {}
-  for _, inst in ipairs(workspace:GetDescendants()) do
-    if (inst:IsA("BasePart") or inst:IsA("Model")) and isTarget(inst, words) then
-      local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model") or inst
-      if not seen[model] then
-        seen[model] = true
-        list[#list + 1] = model
+  local key = table.concat(words, "|")
+  local cached = targetCache[key]
+  if not cached or os.clock() - cached.Time > 1 then
+    local list, seen = {}, {}
+    for _, inst in ipairs(workspace:GetDescendants()) do
+      if (inst:IsA("BasePart") or inst:IsA("Model")) and isTarget(inst, words) then
+        local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model") or inst
+        if not seen[model] then
+          seen[model] = true
+          list[#list + 1] = model
+        end
       end
     end
+    cached = {List = list, Time = os.clock()}
+    targetCache[key] = cached
+  end
+  local list = {}
+  for _, inst in ipairs(cached.List) do
+    if inst.Parent then list[#list + 1] = inst end
   end
   return list
 end
@@ -2440,13 +2452,53 @@ local function firePrompt(prompt)
   return false, "fireproximityprompt unavailable"
 end
 
+local promptCache = {Time = 0, List = {}}
+local function allPrompts()
+  if os.clock() - promptCache.Time > 2 or #promptCache.List == 0 then
+    promptCache.List = {}
+    for _, inst in ipairs(workspace:GetDescendants()) do
+      if inst:IsA("ProximityPrompt") then promptCache.List[#promptCache.List + 1] = inst end
+    end
+    promptCache.Time = os.clock()
+  end
+  local list = {}
+  for _, prompt in ipairs(promptCache.List) do
+    if prompt.Parent then list[#list + 1] = prompt end
+  end
+  return list
+end
+
+local function resetCamera()
+  local char = Player.Character
+  local subject = char and (char:FindFirstChildOfClass("Humanoid") or char:FindFirstChild("HumanoidRootPart"))
+  local cam = workspace.CurrentCamera
+  if not subject or not cam then return end
+  pcall(function()
+    cam.CameraSubject = subject
+    cam.CameraType = Enum.CameraType.Custom
+  end)
+end
+
+local function teleportNear(position, lookAt, offset)
+  local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+  if not root or not position then return false end
+  offset = offset or Vector3.new(0, 3, 0)
+  pcall(function()
+    root.CFrame = CFrame.new(position + offset, lookAt or position)
+  end)
+  task.wait(0.05)
+  pcall(resetCamera)
+  return true
+end
+
 local function applyInstantInteract()
-  for _, prompt in ipairs(workspace:GetDescendants()) do
-    if prompt:IsA("ProximityPrompt") then
+  for _, prompt in ipairs(allPrompts()) do
+    if not prompt:GetAttribute("MeciHubInstant") then
       pcall(function()
         prompt.HoldDuration = 0
         prompt.RequiresLineOfSight = false
-        prompt.MaxActivationDistance = math.max(prompt.MaxActivationDistance, 20)
+        prompt.MaxActivationDistance = math.max(prompt.MaxActivationDistance, 100)
+        prompt:SetAttribute("MeciHubInstant", true)
       end)
     end
   end
@@ -2502,13 +2554,13 @@ local function shootOnce()
 end
 
 local function nearestPrompt(words)
+  words = words or {"EGG", "NEST", "CARRY"}
   local char = Player.Character
   local root = char and char:FindFirstChild("HumanoidRootPart")
   if not root then return nil, math.huge end
-  words = words or {"EGG", "NEST", "CARRY"}
   local best, distance = nil, math.huge
-  for _, prompt in ipairs(workspace:GetDescendants()) do
-    if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+  for _, prompt in ipairs(allPrompts()) do
+    if prompt.Enabled then
       local ancestor = prompt:FindFirstAncestorWhichIsA("BasePart") or prompt.Parent
       local name = string.upper((ancestor and ancestor.Name or prompt.Name))
       local matched = false
@@ -2528,33 +2580,48 @@ end
 local function stealOnce()
   local prompt = nearestPrompt({"EGG", "NEST", "CARRY"})
   if not prompt then return false, "no prompt" end
-  local ancestor = prompt:FindFirstAncestorWhichIsA("BasePart") or prompt.Parent
-  local char = Player.Character
-  local root = char and char:FindFirstChild("HumanoidRootPart")
-  local pos = positionOf(ancestor)
-  if root and pos then
-    root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
-  end
-  task.wait(0.15)
+  pcall(applyInstantInteract)
   local ok, note = firePrompt(prompt)
+  pcall(resetCamera)
   return ok, ok and "prompt fired" or tostring(note)
 end
 
-local function trainOnce()
+local function plotTreadmill()
+  local plot = myPlot and myPlot()
+  local plotPart = plot and partOf(plot)
+  local origin = nil
+  if plotPart then
+    origin = plotPart.CFrame.Position + plotPart.CFrame.LookVector * 8
+  else
+    local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    origin = root and root.Position or nil
+  end
+  local best, distance = nil, math.huge
+  for _, inst in ipairs(findTargets({"TREADMILL", "TRAIN", "GYM", "WORKOUT"})) do
+    local pos = positionOf(inst)
+    if pos then
+      local d = origin and (pos - origin).Magnitude or 0
+      if d < distance then best, distance = pos, d end
+    end
+  end
+  if best then return best end
   local prompt = nearestPrompt({"TREADMILL", "TRAIN", "GYM", "WORKOUT"})
-  if not prompt then return false, "no treadmill prompt" end
-  local ancestor = prompt:FindFirstAncestorWhichIsA("BasePart") or prompt.Parent
-  local char = Player.Character
-  local root = char and char:FindFirstChild("HumanoidRootPart")
-  local pos = positionOf(ancestor)
-  if root and pos then
-    root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+  if prompt then
+    local ancestor = prompt:FindFirstAncestorWhichIsA("BasePart") or prompt.Parent
+    return positionOf(ancestor)
   end
-  task.wait(0.15)
-  local ok, note = firePrompt(prompt)
-  if not ok then
-    ok = callPatterns({"requesttrain", "train", "treadmill", "training"})
-  end
+  return nil
+end
+
+local function trainOnce()
+  local pos = plotTreadmill()
+  if not pos then return false, "no treadmill" end
+  teleportNear(pos, pos, Vector3.new(0, 3, 0))
+  local prompt = nearestPrompt({"TREADMILL", "TRAIN", "GYM", "WORKOUT"})
+  local ok, note = false, "no prompt"
+  if prompt then ok, note = firePrompt(prompt) end
+  if not ok then ok = callPatterns({"requesttrain", "train", "treadmill", "training"}) end
+  pcall(resetCamera)
   return ok, ok and "training" or tostring(note)
 end
 
@@ -2568,8 +2635,9 @@ local function killAuraOnce()
   local point = Vector2.new(screen.X, screen.Y)
   for _ = 1, Config.KillAuraBurst do
     pcall(virtualClick, point, true)
-    task.wait(0.005)
   end
+  task.wait(0.002)
+  pcall(resetCamera)
   return true, target.Name
 end
 
@@ -2656,7 +2724,7 @@ local function belongsTo(inst, root)
 end
 
 local plotCache = nil
-local function myPlot()
+myPlot = function()
   if plotCache and plotCache.Parent then return plotCache end
   for _, inst in ipairs(workspace:GetDescendants()) do
     if inst:IsA("Model") or inst:IsA("BasePart") then
@@ -2891,13 +2959,13 @@ task.spawn(function()
 end)
 
 FarmSection:AddToggle({Title = "Auto Shoot", Content = "Shoots the nearest box or screen center", Default = false, Callback = function(v) Config.AutoShoot = v end})
-FarmSection:AddToggle({Title = "Auto Steal", Content = "Fires the nearest egg ProximityPrompt", Default = false, Callback = function(v) Config.AutoSteal = v end})
+FarmSection:AddToggle({Title = "Auto Steal", Content = "Fires the nearest egg ProximityPrompt", Default = false, Callback = function(v) Config.AutoSteal = v; if v then pcall(resetCamera) end end})
 FarmSection:AddToggle({Title = "Auto Place/Hatch", Content = "Places, hatches and equips eggs", Default = false, Callback = function(v) Config.AutoPlaceHatch = v end})
 FarmSection:AddToggle({Title = "Auto Upgrade", Content = "Upgrades gun, speed, base and claims", Default = false, Callback = function(v) Config.AutoUpgrade = v end})
 
 UtilitySection:AddToggle({Title = "Instant Interact", Content = "Removes ProximityPrompt hold delay", Default = false, Callback = function(v) Config.InstantInteract = v; if v then pcall(applyInstantInteract) end end})
-UtilitySection:AddToggle({Title = "Auto Train", Content = "Teleports to the treadmill and trains", Default = false, Callback = function(v) Config.AutoTrain = v end})
-CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires a rapid burst at the nearest box", Default = false, Callback = function(v) Config.KillAura = v end})
+UtilitySection:AddToggle({Title = "Auto Train", Content = "Teleports to the treadmill and trains", Default = false, Callback = function(v) Config.AutoTrain = v; if v then pcall(resetCamera) end end})
+CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires a rapid burst at the nearest box", Default = false, Callback = function(v) Config.KillAura = v; if v then pcall(resetCamera) end end})
 DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked animals to your plot", Default = false, Callback = function(v) Config.AutoDeliver = v end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
@@ -2942,8 +3010,8 @@ TuneSection:AddSlider({Title = "Steal delay", Content = "Seconds between steals"
 TuneSection:AddSlider({Title = "Place delay", Content = "Seconds between egg cycles", Increment = 0.5, Min = 1, Max = 30, Default = 3, Callback = function(v) Config.PlaceDelay = v end})
 TuneSection:AddSlider({Title = "Upgrade delay", Content = "Seconds between upgrade rounds", Increment = 1, Min = 1, Max = 120, Default = 10, Callback = function(v) Config.UpgradeDelay = v end})
 TuneSection:AddSlider({Title = "Train delay", Content = "Seconds between training rounds", Increment = 0.5, Min = 1, Max = 60, Default = 5, Callback = function(v) Config.TrainDelay = v end})
-TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.02, Max = 1, Default = 0.08, Callback = function(v) Config.KillAuraDelay = v end})
-TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 32, Default = 8, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
+TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.01, Max = 1, Default = 0.01, Callback = function(v) Config.KillAuraDelay = v end})
+TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 48, Default = 12, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
 TuneSection:AddSlider({Title = "Deliver height", Content = "Studs above plot ground", Increment = 0.1, Min = 0, Max = 5, Default = 0.6, Callback = function(v) Config.DeliverHeight = v end})
 TuneSection:AddSlider({Title = "ESP range", Content = "Maximum studs for ESP labels", Increment = 25, Min = 50, Max = 1000, Default = 250, Callback = function(v) Config.EspRange = v; pcall(refreshEsp) end})
 

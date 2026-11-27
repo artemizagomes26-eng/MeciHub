@@ -2296,7 +2296,7 @@ local Config = {
   EggWhitelist = {},
   PlaceSpot = nil,
   PrivateServerLink = "",
-  AutoEvent = true,
+  AutoEvent = false,
   EventChoice = "All",
   EventFloatHeight = 7,
   DeliverHeight = 0.6,
@@ -2319,18 +2319,20 @@ local Window = Speed_Library:CreateWindow({
 })
 
 local MainTab = Window:CreateTab({Name = "Main", Icon = MECI_ICON})
+local QuickTab = Window:CreateTab({Name = "Quick Actions", Icon = MECI_ICON})
 local AutomationTab = Window:CreateTab({Name = "Automation", Icon = MECI_ICON})
+local DeliveryTab = Window:CreateTab({Name = "Delivery", Icon = MECI_ICON})
 local UpgradeTab = Window:CreateTab({Name = "Upgrader", Icon = MECI_ICON})
 local EspTab = Window:CreateTab({Name = "ESP", Icon = MECI_ICON})
 local SettingsTab = Window:CreateTab({Name = "Settings", Icon = MECI_ICON})
 local StatusTab = Window:CreateTab({Name = "Status", Icon = MECI_ICON})
 
 local FarmSection = MainTab:AddSection("Farm", true)
-local QuickSection = MainTab:AddSection("Quick Actions", true)
+local QuickSection = QuickTab:AddSection("Quick Actions", true)
 local UtilitySection = AutomationTab:AddSection("Utility", true)
 local CombatSection = AutomationTab:AddSection("Combat", true)
 local EventSection = AutomationTab:AddSection("Events", true)
-local DeliverySection = AutomationTab:AddSection("Delivery", true)
+local DeliverySection = DeliveryTab:AddSection("Delivery", true)
 local UpgradeSection = UpgradeTab:AddSection("Auto Upgrader", true)
 local EspSection = EspTab:AddSection("Visuals", true)
 local TuneSection = SettingsTab:AddSection("Settings", true)
@@ -2409,6 +2411,102 @@ pcall(function()
   end
   if initial and initial ~= "" then setPrivateServerLink(initial) end
 end)
+
+local privateLinkGui = nil
+local function showPrivateLinkPrompt()
+  if privateLinkGui and privateLinkGui.Parent then return end
+  local gui = Instance.new("ScreenGui")
+  gui.Name = "MeciHubPrivateServerLink"
+  gui.ResetOnSpawn = false
+  gui.IgnoreGuiInset = true
+  gui.DisplayOrder = 999
+  gui.Parent = PlayerGui
+  privateLinkGui = gui
+  local frame = Instance.new("Frame")
+  frame.Name = "Prompt"
+  frame.Size = UDim2.fromOffset(460, 190)
+  frame.Position = UDim2.new(0.5, -230, 0.5, -95)
+  frame.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+  frame.BorderSizePixel = 0
+  frame.Parent = gui
+  local corner = Instance.new("UICorner")
+  corner.CornerRadius = UDim.new(0, 8)
+  corner.Parent = frame
+  local title = Instance.new("TextLabel")
+  title.Size = UDim2.new(1, -24, 0, 30)
+  title.Position = UDim2.new(0, 12, 0, 12)
+  title.BackgroundTransparency = 1
+  title.Font = Enum.Font.SourceSansSemibold
+  title.Text = "Meci Hub - Private Server Link"
+  title.TextColor3 = Color3.fromRGB(255, 255, 255)
+  title.TextSize = 18
+  title.TextXAlignment = Enum.TextXAlignment.Left
+  title.Parent = frame
+  local hint = Instance.new("TextLabel")
+  hint.Size = UDim2.new(1, -24, 0, 28)
+  hint.Position = UDim2.new(0, 12, 0, 44)
+  hint.BackgroundTransparency = 1
+  hint.Font = Enum.Font.SourceSans
+  hint.Text = "Cole o link do servidor privado para usar os eventos."
+  hint.TextColor3 = Color3.fromRGB(200, 200, 210)
+  hint.TextSize = 13
+  hint.TextXAlignment = Enum.TextXAlignment.Left
+  hint.Parent = frame
+  local box = Instance.new("TextBox")
+  box.Size = UDim2.new(1, -24, 0, 40)
+  box.Position = UDim2.new(0, 12, 0, 78)
+  box.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+  box.BorderSizePixel = 0
+  box.Font = Enum.Font.SourceSans
+  box.PlaceholderColor3 = Color3.fromRGB(130, 130, 145)
+  box.PlaceholderText = "https://www.roblox.com/games/82505988558777/...privateServerLinkCode=..."
+  box.Text = Config.PrivateServerLink
+  box.TextColor3 = Color3.fromRGB(255, 255, 255)
+  box.TextSize = 13
+  box.ClearTextOnFocus = false
+  box.Parent = frame
+  local boxCorner = Instance.new("UICorner")
+  boxCorner.CornerRadius = UDim.new(0, 6)
+  boxCorner.Parent = box
+  local save = Instance.new("TextButton")
+  save.Size = UDim2.fromOffset(160, 38)
+  save.Position = UDim2.new(0, 12, 1, -50)
+  save.BackgroundColor3 = Color3.fromRGB(70, 140, 255)
+  save.BorderSizePixel = 0
+  save.Font = Enum.Font.SourceSansSemibold
+  save.Text = "Salvar link"
+  save.TextColor3 = Color3.fromRGB(255, 255, 255)
+  save.TextSize = 14
+  save.Parent = frame
+  local saveCorner = Instance.new("UICorner")
+  saveCorner.CornerRadius = UDim.new(0, 6)
+  saveCorner.Parent = save
+  local skip = Instance.new("TextButton")
+  skip.Size = UDim2.fromOffset(160, 38)
+  skip.Position = UDim2.new(1, -172, 1, -50)
+  skip.BackgroundColor3 = Color3.fromRGB(60, 60, 72)
+  skip.BorderSizePixel = 0
+  skip.Font = Enum.Font.SourceSansSemibold
+  skip.Text = "Usar sem link"
+  skip.TextColor3 = Color3.fromRGB(255, 255, 255)
+  skip.TextSize = 14
+  skip.Parent = frame
+  local skipCorner = Instance.new("UICorner")
+  skipCorner.CornerRadius = UDim.new(0, 6)
+  skipCorner.Parent = skip
+  save.MouseButton1Click:Connect(function()
+    local value = box.Text
+    if not value or value == "" then action("Cole o link do servidor PV") return end
+    setPrivateServerLink(value)
+    gui:Destroy()
+    if privateLinkGui == gui then privateLinkGui = nil end
+  end)
+  skip.MouseButton1Click:Connect(function()
+    gui:Destroy()
+    if privateLinkGui == gui then privateLinkGui = nil end
+    action("PV link ignorado")
+  end)
+end
 
 local function callRemote(remote, ...)
   local args = {...}
@@ -2879,6 +2977,24 @@ local function eventAlive(target)
   return true
 end
 
+local function eventValid(target, words)
+  if not eventAlive(target) or not target:IsA("Model") then return false end
+  local matched = isTarget(target, words)
+  if not matched then
+    for _, inst in ipairs(target:GetDescendants()) do
+      if isTarget(inst, words) then matched = true break end
+    end
+  end
+  if not matched then return false end
+  local humanoid = target:FindFirstChildWhichIsA("Humanoid", true)
+  if not humanoid then return false end
+  local anchor = eventAnchor(target)
+  if not anchor or not anchor:IsA("BasePart") then return false end
+  local pos = anchor.Position
+  if pos.Y < -500 or pos.Y > 10000 or math.abs(pos.X) > 100000 or math.abs(pos.Z) > 100000 then return false end
+  return true
+end
+
 local function findSelectedEvent()
   local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
   local origin = root and root.Position or nil
@@ -2886,7 +3002,7 @@ local function findSelectedEvent()
   for _, entry in ipairs(EVENT_ENTRIES) do
     if eventAllowed(entry.Name) then
       for _, target in ipairs(findTargets(entry.Words)) do
-        if eventAlive(target) then
+        if eventValid(target, entry.Words) then
           local anchor = eventAnchor(target)
           local pos = anchor and anchor.Position or nil
           local distance = origin and pos and (pos - origin).Magnitude or 0
@@ -2921,7 +3037,7 @@ local function fireAtEvent(target)
 end
 
 local function runEvent(target, name)
-  if not target or not eventAlive(target) then return false end
+  if not target or not eventValid(target, {"TITAN", "MECH", "TURKEY", "THANKSGIVING"}) then return false end
   activeEventTarget = target
   activeEventName = name
   eventStop = false
@@ -3514,8 +3630,15 @@ CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Clicks the 
 CombatSection:AddInput({Title = "Shoot remote", Content = "Exact remote name from Scan remotes", Default = "", Callback = function(v) Config.ShootRemoteName = v end})
 CombatSection:AddInput({Title = "Event shoot remote", Content = "Exact Turkey/Mech/Titan remote, optional", Default = "", Callback = function(v) Config.EventShootRemoteName = v end})
 EventSection:AddInput({Title = "Private server link", Content = "Paste the private server link", Default = Config.PrivateServerLink, Callback = setPrivateServerLink})
-EventSection:AddDropdown({Title = "Event choice", Content = "Which event to complete", Multi = false, Options = {"All", "Titan Mech", "Mech", "Turkey"}, Default = "All", Callback = function(v) Config.EventChoice = v or "All"; action("Event choice: " .. Config.EventChoice) end})
-EventSection:AddToggle({Title = "Auto events", Content = "Starts the selected event automatically", Default = true, Callback = function(v) Config.AutoEvent = v end})
+EventSection:AddDropdown({Title = "Event choice", Content = "Which event to complete", Multi = false, Options = {"All", "Titan Mech", "Mech", "Turkey"}, Default = "All", Callback = function(v)
+  if type(v) == "table" then
+    Config.EventChoice = v[1] or "All"
+  else
+    Config.EventChoice = v or "All"
+  end
+  action("Event choice: " .. tostring(Config.EventChoice))
+end})
+EventSection:AddToggle({Title = "Do events", Content = "Enables Titan Mech, Mech and Turkey", Default = false, Callback = function(v) Config.AutoEvent = v; if not v then eventStop = true end end})
 EventSection:AddButton({Title = "Complete event", Content = "Starts the chosen event now", Callback = function()
   local ok, note = startSelectedEvent()
   action(ok and note or note)
@@ -3630,16 +3753,6 @@ pcall(function()
   })
 end)
 
-if Config.PrivateServerLink == "" then
-  pcall(function()
-    Speed_Library:SetNotification({
-      Title = "Meci Hub",
-      Description = "Private server link",
-      Content = "Cole o link do servidor PV na aba Events.",
-      Time = 8,
-      Delay = 1,
-    })
-  end)
-end
+pcall(showPrivateLinkPrompt)
 
-status("Ready", "Cole o link PV na aba Events e escolha Titan Mech, Mech, Turkey ou All.")
+status("Ready", "Link PV na janela aberta. Ative Do events para começar.")

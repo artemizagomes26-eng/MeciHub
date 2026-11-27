@@ -2401,6 +2401,7 @@ local Config = {
   EspBox = false,
   EspEgg = false,
   EspAutoRefresh = true,
+  ValuableNotifier = false,
   ShootDelay = 0.35,
   StealDelay = 1.5,
   PlaceDelay = 3,
@@ -2430,6 +2431,8 @@ local Config = {
 
 local RemoteCache = {}
 local espObjects = {}
+local notifiedValuable = {}
+local notifyHolder = nil
 local lastInventorySignature = ""
 local lastPickedSignature = nil
 local myPlot = nil
@@ -3457,9 +3460,28 @@ local function deliverTick(dt)
   return true
 end
 
+local function parseRateValue(rate)
+  local text = tostring(rate or "")
+  local numberText = text:match("[%d%.,]+") or "0"
+  if string.match(numberText, ",%d$") then
+    numberText = numberText:gsub(",", ".")
+  else
+    numberText = numberText:gsub(",", "")
+  end
+  local value = tonumber(numberText) or 0
+  local lower = string.lower(text)
+  if string.find(lower, "b") or string.find(lower, "bil") then
+    return value * 1000000000
+  elseif string.find(lower, "m") or string.find(lower, "mil") then
+    return value * 1000000
+  elseif string.find(lower, "k") then
+    return value * 1000
+  end
+  return value
+end
+
 local function rateNumber(rate)
-  local value = tonumber(tostring(rate):match("[%d%.]+"))
-  return value or 0
+  return parseRateValue(rate)
 end
 
 local function ownedAnimals()
@@ -3497,6 +3519,95 @@ local function clearEsp()
     pcall(function() gui:Destroy() end)
   end
   espObjects = {}
+end
+
+local function ensureNotifyHolder()
+  if notifyHolder and notifyHolder.Parent then return notifyHolder end
+  local host = type(gethui) == "function" and gethui() or CoreGui
+  local gui = Instance.new("ScreenGui")
+  gui.Name = "MeciHubValuableAlerts"
+  gui.ResetOnSpawn = false
+  gui.IgnoreGuiInset = true
+  gui.DisplayOrder = 997
+  gui.Parent = host
+  local holder = Instance.new("Frame")
+  holder.Name = "Alerts"
+  holder.AnchorPoint = Vector2.new(1, 0)
+  holder.Position = UDim2.new(1, -20, 0, 20)
+  holder.Size = UDim2.new(0, 360, 1, -40)
+  holder.BackgroundTransparency = 1
+  holder.Parent = gui
+  local layout = Instance.new("UIListLayout")
+  layout.Padding = UDim.new(0, 8)
+  layout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+  layout.VerticalAlignment = Enum.VerticalAlignment.Top
+  layout.Parent = holder
+  notifyHolder = holder
+  return holder
+end
+
+local function showValuableNotification(area)
+  local holder = ensureNotifyHolder()
+  local frame = Instance.new("Frame")
+  frame.Size = UDim2.new(0, 360, 0, 44)
+  frame.BackgroundColor3 = Color3.fromRGB(80, 30, 30)
+  frame.BackgroundTransparency = 0.12
+  frame.BorderSizePixel = 0
+  frame.Parent = holder
+  local corner = Instance.new("UICorner")
+  corner.CornerRadius = UDim.new(0, 6)
+  corner.Parent = frame
+  local label = Instance.new("TextLabel")
+  label.Size = UDim2.new(1, -20, 1, 0)
+  label.Position = UDim2.new(0, 10, 0, 0)
+  label.BackgroundTransparency = 1
+  label.Font = Enum.Font.GothamBold
+  label.Text = "[VALUABLE ANIMAL IN " .. string.upper(area) .. "]"
+  label.TextColor3 = Color3.fromRGB(255, 230, 180)
+  label.TextSize = 14
+  label.Parent = frame
+  task.delay(6, function()
+    pcall(function() frame:Destroy() end)
+  end)
+end
+
+local function spawnAreaOf(inst)
+  local node = inst and inst.Parent
+  while node and node ~= workspace do
+    local name = tostring(node.Name)
+    local upper = string.upper(name)
+    for _, word in ipairs({"AREA", "ZONE", "ISLAND", "FARM", "JUNGLE", "DESERT", "BEACH", "MOUNTAIN", "CAVE", "VOID", "SHOP", "EVENT", "TITAN", "MECH", "TURKEY", "BASE", "PLOT"}) do
+      if string.find(upper, word, 1, true) then return name end
+    end
+    node = node.Parent
+  end
+  local part = inst and partOf(inst)
+  if part then
+    return "X" .. math.floor(part.Position.X) .. " Z" .. math.floor(part.Position.Z)
+  end
+  return "UNKNOWN"
+end
+
+local function valuableNotifierTick()
+  if not Config.ValuableNotifier then
+    notifiedValuable = {}
+    return
+  end
+  local current = {}
+  for _, target in ipairs(findTargets({"ANIMAL", "PET", "BOX", "CRATE", "PACKAGE", "CARTON", "EGG", "NEST"})) do
+    local _, rate = targetInfo(target)
+    if parseRateValue(rate) >= 1000000000 then
+      local key = uidOf(target) or target:GetFullName()
+      current[key] = true
+      if not notifiedValuable[key] then
+        notifiedValuable[key] = true
+        pcall(showValuableNotification, spawnAreaOf(target))
+      end
+    end
+  end
+  for key in pairs(notifiedValuable) do
+    if not current[key] then notifiedValuable[key] = nil end
+  end
 end
 
 local function refreshEsp()
@@ -3596,6 +3707,13 @@ task.spawn(function()
       end
     end)
     if not ok then warn("[Meci Hub] Farm tick error: " .. tostring(err)) end
+  end
+end)
+
+task.spawn(function()
+  while true do
+    task.wait(1)
+    pcall(valuableNotifierTick)
   end
 end)
 
@@ -3794,6 +3912,7 @@ end})
 EspSection:AddToggle({Title = "ESP Box", Content = "Shows boxes with animal and cash rate", Default = false, Callback = function(v) Config.EspBox = v; pcall(refreshEsp) end})
 EspSection:AddToggle({Title = "ESP Egg", Content = "Shows eggs and nests with animal and cash rate", Default = false, Callback = function(v) Config.EspEgg = v; pcall(refreshEsp) end})
 EspSection:AddToggle({Title = "Auto Refresh ESP", Content = "Updates labels automatically every 0.25s", Default = true, Callback = function(v) Config.EspAutoRefresh = v end})
+EspSection:AddToggle({Title = "Valuable alert", Content = "Notifies when an animal worth 1B+/s appears", Default = false, Callback = function(v) Config.ValuableNotifier = v; if not v then notifiedValuable = {} end end})
 EspSection:AddButton({Title = "Refresh ESP", Content = "Rebuilds all ESP labels", Callback = function() pcall(refreshEsp); action("ESP refreshed") end})
 
 TuneSection:AddSlider({Title = "Shoot delay", Content = "Seconds between shots", Increment = 0.05, Min = 0.1, Max = 3, Default = 0.35, Callback = function(v) Config.ShootDelay = v end})

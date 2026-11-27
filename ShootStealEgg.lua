@@ -2395,6 +2395,7 @@ local Config = {
   InstantInteract = false,
   AutoTrain = false,
   KillAura = false,
+  RemoteRelay = false,
   AutoDeliver = false,
   AutoPlotOnPickup = false,
   AutoEquipBest = false,
@@ -2408,6 +2409,7 @@ local Config = {
   UpgradeDelay = 10,
   TrainDelay = 5,
   KillAuraDelay = 0.06,
+  RemoteRelayRate = 10,
   EventKillAuraDelay = 0.02,
   KillAuraBurst = 8,
   KillAuraBurstEvent = 12,
@@ -2418,6 +2420,7 @@ local Config = {
   AutoUpgrader = false,
   UpgraderDelay = 2,
   UpgradeReturnDelay = 0.6,
+  KeepPositionAfterUpgrade = true,
   UpgradeFlags = {Gun = true, Treadmill = true, Companion = true, Trail = true},
   EggWhitelist = {},
   PlaceSpot = nil,
@@ -2439,6 +2442,8 @@ local myPlot = nil
 local captureActive = false
 local capturedRemote = nil
 local captureHookOk = false
+local suppressLearn = false
+local learnedShoot = nil
 
 local Window = Speed_Library:CreateWindow({
   Title = "Meci Hub",
@@ -2499,15 +2504,54 @@ local function describeArgs(...)
   return table.concat(parts, ", ")
 end
 
+local function findShotTarget(value, depth)
+  depth = depth or 0
+  if depth > 2 or value == nil then return nil end
+  if typeof(value) == "Instance" then
+    local ok, mine = pcall(function() return value == Player.Character or value:IsDescendantOf(Player.Character) end)
+    if ok and not mine then return value end
+  end
+  if typeof(value) == "Vector3" or typeof(value) == "CFrame" then return value end
+  if type(value) == "table" then
+    for _, nested in pairs(value) do
+      local found = findShotTarget(nested, depth + 1)
+      if found then return found end
+    end
+  end
+  return nil
+end
+
+local function isShootRemoteName(name)
+  local lower = string.lower(tostring(name or ""))
+  for _, word in ipairs({"shoot", "fire", "attack", "damage", "hit", "crate", "box", "egg", "animal", "turkey", "mech", "titan", "boss", "event"}) do
+    if string.find(lower, word, 1, true) then return true end
+  end
+  return false
+end
+
 pcall(function()
   local oldNamecall
   local hookFunc = function(self, ...)
-    if captureActive and typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction") or self:IsA("UnreliableRemoteEvent")) then
+    if typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction") or self:IsA("UnreliableRemoteEvent")) then
       local method = getnamecallmethod and getnamecallmethod() or ""
       if method == "FireServer" or method == "InvokeServer" or method == "Fire" then
-        capturedRemote = {Name = self.Name, FullName = self:GetFullName(), Args = describeArgs(...)}
-        captureActive = false
-        action("Captured " .. self.Name .. "(" .. capturedRemote.Args .. ")")
+        if captureActive then
+          capturedRemote = {Name = self.Name, FullName = self:GetFullName(), Args = describeArgs(...)}
+          captureActive = false
+          action("Captured " .. self.Name .. "(" .. capturedRemote.Args .. ")")
+        elseif not suppressLearn and isShootRemoteName(self.Name) then
+          local args = {...}
+          local signature = describeArgs(...)
+          local target = findShotTarget(args)
+          learnedShoot = {
+            Remote = self,
+            Args = args,
+            Signature = signature,
+            Target = target,
+            Time = os.clock(),
+          }
+          action("Learned " .. self.Name .. " -> " .. argLabel(target))
+        end
       end
     end
     return oldNamecall(self, ...)
@@ -2534,6 +2578,7 @@ end
 local function callRemote(remote, ...)
   local args = {...}
   local ok, err
+  suppressLearn = true
   if remote:IsA("RemoteFunction") then
     local done, result = false, nil
     local thread = task.spawn(function()
@@ -2544,11 +2589,14 @@ local function callRemote(remote, ...)
     repeat task.wait() until done or os.clock() - started > 4
     if not done then
       pcall(task.cancel, thread)
+      suppressLearn = false
       return false, "timeout"
     end
+    suppressLearn = false
     return ok, result
   end
   ok, err = pcall(function() remote:FireServer(table.unpack(args)) end)
+  suppressLearn = false
   return ok, err
 end
 
@@ -2934,7 +2982,21 @@ local function trainOnce()
   return ok, ok and "training" or tostring(note)
 end
 
+local function remoteRelayOnce()
+  local shot = learnedShoot
+  if not shot or not shot.Remote or not shot.Remote.Parent then return false, "no learned shoot" end
+  local count = math.max(1, math.floor(Config.RemoteRelayRate or 10))
+  local hits = 0
+  for _ = 1, count do
+    local ok = callRemote(shot.Remote, table.unpack(shot.Args))
+    if ok then hits = hits + 1 end
+    task.wait(0.005)
+  end
+  return hits > 0, shot.Remote.Name .. " x" .. hits .. " -> " .. argLabel(shot.Target)
+end
+
 local function killAuraOnce(burst, waitTime)
+  if Config.RemoteRelay and learnedShoot then return remoteRelayOnce() end
   local words = {"BOX", "CRATE", "PACKAGE", "CARTON", "TURKEY", "TITAN", "MECH", "BOSS", "THANKSGIVING", "EVENT"}
   local target = nearestTarget(words)
   if not target then return false, "no target" end
@@ -3310,13 +3372,15 @@ local function upgradeItem(item)
   if money < spot.Price then return false, item.Name .. ": need $" .. tostring(spot.Price) end
   local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
   if not root then return false, "no character" end
-  if not originalPosition then originalPosition = root.CFrame end
+  if not Config.KeepPositionAfterUpgrade and not originalPosition then originalPosition = root.CFrame end
   teleportNear(spot.Position, spot.Position, Vector3.new(0, 2, 0))
   local prompt = nearestPrompt(item.Words)
   local ok = callPatterns(item.Patterns, item.Key)
   if not ok and prompt then ok, _ = firePrompt(prompt) end
-  task.wait(Config.UpgradeReturnDelay)
-  pcall(function() root.CFrame = originalPosition end)
+  if not Config.KeepPositionAfterUpgrade then
+    task.wait(Config.UpgradeReturnDelay)
+    pcall(function() root.CFrame = originalPosition end)
+  end
   pcall(recenterCamera)
   return true, item.Name .. " $" .. tostring(spot.Price)
 end
@@ -3663,7 +3727,7 @@ local function refreshEsp()
 end
 
 task.spawn(function()
-  local lastShoot, lastSteal, lastPlace, lastUpgrade, lastTrain, lastEquip, lastReturn = 0, 0, 0, 0, 0, 0, 0
+  local lastShoot, lastSteal, lastPlace, lastUpgrade, lastTrain, lastEquip, lastReturn, lastRelay = 0, 0, 0, 0, 0, 0, 0, 0
   while true do
     task.wait(0.1)
     local now = os.clock()
@@ -3756,6 +3820,18 @@ end)
 task.spawn(function()
   while true do
     task.wait(1)
+    if Config.RemoteRelay and not Config.KillAura and not eventBusy then
+      pcall(function()
+        local done, note = remoteRelayOnce()
+        action("Remote relay " .. (done and note or note))
+      end)
+    end
+  end
+end)
+
+task.spawn(function()
+  while true do
+    task.wait(1)
     if Config.InstantInteract then pcall(applyInstantInteract) end
   end
 end)
@@ -3816,6 +3892,8 @@ FarmSection:AddToggle({Title = "Auto Upgrade", Content = "Upgrades gun, speed, b
 UtilitySection:AddToggle({Title = "Instant Interact", Content = "Removes ProximityPrompt hold delay", Default = false, Callback = function(v) Config.InstantInteract = v; if v then pcall(applyInstantInteract) end end})
 UtilitySection:AddToggle({Title = "Auto Train", Content = "Teleports to the treadmill and trains", Default = false, Callback = function(v) Config.AutoTrain = v; if v then pcall(resetCamera) end end})
 CombatSection:AddToggle({Title = "Kill Aura", Content = "Fires at boxes and Turkey/Mech/Titan events", Default = false, Callback = function(v) Config.KillAura = v; if v then pcall(recenterCamera) end end})
+CombatSection:AddToggle({Title = "Remote relay", Content = "Repeats the game's own auto shot target xN/sec", Default = false, Callback = function(v) Config.RemoteRelay = v; if not v then learnedShoot = nil end end})
+CombatSection:AddButton({Title = "Clear learned shot", Content = "Forgets the last learned remote and target", Callback = function() learnedShoot = nil; action("Learned shoot cleared") end})
 CombatSection:AddToggle({Title = "Screen Click Fallback", Content = "Clicks the target if no remote works", Default = true, Callback = function(v) Config.ScreenClickFallback = v end})
 CombatSection:AddInput({Title = "Shoot remote", Content = "Exact remote name from Scan remotes", Default = "", Callback = function(v) Config.ShootRemoteName = v end})
 CombatSection:AddInput({Title = "Event shoot remote", Content = "Exact Turkey/Mech/Titan remote, optional", Default = "", Callback = function(v) Config.EventShootRemoteName = v end})
@@ -3842,7 +3920,8 @@ DeliverySection:AddToggle({Title = "Auto Deliver", Content = "Floats picked anim
 DeliverySection:AddToggle({Title = "Plot on pickup", Content = "Teleports you to your plot only when holding an animal or egg", Default = false, Callback = function(v) Config.AutoPlotOnPickup = v; if not v then lastPickedSignature = nil end end})
 DeliverySection:AddToggle({Title = "Auto Equip Best", Content = "Equips the highest rate animal after pickup", Default = false, Callback = function(v) Config.AutoEquipBest = v end})
 
-UpgradeSection:AddToggle({Title = "Auto Upgrader", Content = "Buys affordable upgrades and returns", Default = false, Callback = function(v) Config.AutoUpgrader = v; if v then pcall(saveOriginalPosition) end end})
+UpgradeSection:AddToggle({Title = "Auto Upgrader", Content = "Buys affordable upgrades without returning", Default = false, Callback = function(v) Config.AutoUpgrader = v end})
+UpgradeSection:AddToggle({Title = "Keep position after upgrade", Content = "Stops teleporting back to the saved spot", Default = true, Callback = function(v) Config.KeepPositionAfterUpgrade = v; if not v then pcall(saveOriginalPosition) end end})
 UpgradeSection:AddToggle({Title = "Gun", Content = "Upgrades the gun when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Gun = v end})
 UpgradeSection:AddToggle({Title = "Treadmill", Content = "Upgrades the treadmill when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Treadmill = v end})
 UpgradeSection:AddToggle({Title = "Companion", Content = "Upgrades the companion when affordable", Default = true, Callback = function(v) Config.UpgradeFlags.Companion = v end})
@@ -3921,6 +4000,7 @@ TuneSection:AddSlider({Title = "Place delay", Content = "Seconds between egg cyc
 TuneSection:AddSlider({Title = "Upgrade delay", Content = "Seconds between upgrade rounds", Increment = 1, Min = 1, Max = 120, Default = 10, Callback = function(v) Config.UpgradeDelay = v end})
 TuneSection:AddSlider({Title = "Train delay", Content = "Seconds between training rounds", Increment = 0.5, Min = 1, Max = 60, Default = 5, Callback = function(v) Config.TrainDelay = v end})
 TuneSection:AddSlider({Title = "Kill aura delay", Content = "Seconds between shot bursts", Increment = 0.01, Min = 0.02, Max = 2, Default = 0.06, Callback = function(v) Config.KillAuraDelay = v end})
+TuneSection:AddSlider({Title = "Remote relay rate", Content = "Learned auto shots repeated per second", Increment = 1, Min = 1, Max = 30, Default = 10, Callback = function(v) Config.RemoteRelayRate = math.floor(v) end})
 TuneSection:AddSlider({Title = "Event kill aura", Content = "Faster delay during Turkey/Mech events", Increment = 0.005, Min = 0.01, Max = 1, Default = 0.02, Callback = function(v) Config.EventKillAuraDelay = v end})
 TuneSection:AddSlider({Title = "Kill aura shots", Content = "Shots per burst", Increment = 1, Min = 1, Max = 24, Default = 8, Callback = function(v) Config.KillAuraBurst = math.floor(v) end})
 TuneSection:AddSlider({Title = "Event aura shots", Content = "Shots per event burst", Increment = 1, Min = 1, Max = 32, Default = 12, Callback = function(v) Config.KillAuraBurstEvent = math.floor(v) end})

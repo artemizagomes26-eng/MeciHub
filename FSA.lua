@@ -2332,14 +2332,8 @@ local function findOurGui()
 end
 OurGui = findOurGui()
 
-local function isOur(inst)
-  if not OurGui then return false end
-  local gui = inst:FindFirstAncestorWhichIsA("ScreenGui")
-  return gui == OurGui
-end
-
 local function visible(inst)
-  if not inst or isOur(inst) then return false end
+  if not inst then return false end
   while inst and inst:IsA("GuiObject") do
     if not inst.Visible or inst.AbsoluteSize.X < 1 or inst.AbsoluteSize.Y < 1 then
       return false
@@ -2368,7 +2362,6 @@ local function gameGuis()
     end
   end
   add(PlayerGui)
-  add(CoreGui)
   return guiCache
 end
 
@@ -2603,15 +2596,26 @@ end
 
 local screen = {green = {}, small = {}, numbers = {}}
 local screenAt = 0
+local scanRoot = nil
+local scanRootAt = 0
 
 local function scanScreen()
   local now = os.clock()
-  if now - screenAt < 0.1 then return false end
+  if now - screenAt < 0.12 then return false end
   screenAt = now
   screen.green, screen.small, screen.numbers = {}, {}, {}
-  for _, gui in ipairs(gameGuis()) do
-    if gui.Enabled then
-      for _, inst in ipairs(gui:GetDescendants()) do
+  local roots
+  if scanRoot and scanRoot.Parent and now - scanRootAt < 3 then
+    roots = {scanRoot}
+  else
+    scanRoot = nil
+    roots = gameGuis()
+  end
+  for _, root in ipairs(roots) do
+    if not root:IsA("ScreenGui") or root.Enabled then
+      local items = root:GetDescendants()
+      if root:IsA("GuiObject") then items[#items + 1] = root end
+      for _, inst in ipairs(items) do
         if inst:IsA("GuiObject") and visible(inst) then
           local size = inst.AbsoluteSize
           local score = greenScore(inst)
@@ -2674,12 +2678,16 @@ local function findBarZone()
       if not best or score > best.score then
         best = {
           pos = Vector2.new(minx, miny), size = size, center = center,
-          score = score, inferred = false,
+          score = score, inferred = false, root = a.inst.Parent or a.inst,
         }
       end
     end
   end
-  if best then return best end
+  if best then
+    scanRoot = best.root
+    scanRootAt = os.clock()
+    return best
+  end
   local nearest
   for _, n in ipairs(screen.numbers) do
     local d = (centerOf(n.pos, n.size) - anchor).Magnitude
@@ -2688,6 +2696,8 @@ local function findBarZone()
   if nearest and nearest.d < 320 then
     local p = nearest.n.pos
     local s = nearest.n.size
+    scanRoot = nearest.n.inst.Parent or nearest.n.inst
+    scanRootAt = os.clock()
     return {
       pos = Vector2.new(p.X - 80, p.Y - 12), size = Vector2.new(s.X + 160, s.Y + 24),
       center = centerOf(p, s), inferred = true,
@@ -2718,7 +2728,7 @@ task.spawn(function()
   local armed, lastClick, lastCast, lastError = true, 0, 0, 0
   local zone = nil
   while true do
-    task.wait(0.04)
+    task.wait(0.06)
     local ok, err = pcall(function()
       if not Config.AutoFish or not isAtFishingSpot() then
         armed = true

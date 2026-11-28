@@ -2349,21 +2349,27 @@ local function visible(inst)
   return true
 end
 
+local guiCache = {}
+local guiCacheAt = 0
+
 local function gameGuis()
-  local list = {}
+  local now = os.clock()
+  if now - guiCacheAt < 0.25 and #guiCache > 0 then return guiCache end
+  guiCacheAt = now
+  guiCache = {}
   local seen = {}
   local function add(host)
     if not host then return end
     for _, gui in ipairs(host:GetChildren()) do
       if gui:IsA("ScreenGui") and gui ~= OurGui and not seen[gui] then
         seen[gui] = true
-        list[#list + 1] = gui
+        guiCache[#guiCache + 1] = gui
       end
     end
   end
   add(PlayerGui)
   add(CoreGui)
-  return list
+  return guiCache
 end
 
 local function findByName(pattern)
@@ -2377,7 +2383,14 @@ local function findByName(pattern)
   return nil
 end
 
+local castButtonCache = nil
+local castButtonAt = 0
+
 local function findGameCastButton()
+  local now = os.clock()
+  if castButtonCache and castButtonCache.Parent and now - castButtonAt < 0.25 then return castButtonCache end
+  castButtonAt = now
+  castButtonCache = nil
   for _, gui in ipairs(gameGuis()) do
     for _, inst in ipairs(gui:GetDescendants()) do
       if inst:IsA("GuiButton") and visible(inst) then
@@ -2386,6 +2399,7 @@ local function findGameCastButton()
         if string.find(text, "CAST", 1, true) or string.find(text, "FISH", 1, true)
           or string.find(text, "LANCAR", 1, true) or string.find(text, "PESCAR", 1, true)
           or string.find(name, "CAST", 1, true) or string.find(name, "FISH", 1, true) then
+          castButtonCache = inst
           return inst
         end
       end
@@ -2395,20 +2409,31 @@ local function findGameCastButton()
     local container = findByName(name)
     if container then
       for _, inst in ipairs(container:GetDescendants()) do
-        if inst:IsA("GuiButton") and visible(inst) then return inst end
+        if inst:IsA("GuiButton") and visible(inst) then
+          castButtonCache = inst
+          return inst
+        end
       end
     end
   end
   return nil
 end
 
+local fishingTextCache = false
+local fishingTextAt = 0
+
 local function hasFishingText()
+  local now = os.clock()
+  if now - fishingTextAt < 0.25 then return fishingTextCache end
+  fishingTextAt = now
+  fishingTextCache = false
   for _, gui in ipairs(gameGuis()) do
     for _, inst in ipairs(gui:GetDescendants()) do
       if (inst:IsA("TextLabel") or inst:IsA("TextButton")) and visible(inst) then
         local text = string.upper(inst.Text or "")
         if string.find(text, "TAP TO", 1, true) or string.find(text, "CAST", 1, true)
           or string.find(text, "PERFECT", 1, true) or string.find(text, "CATCH", 1, true) then
+          fishingTextCache = true
           return true
         end
       end
@@ -2417,17 +2442,24 @@ local function hasFishingText()
   return false
 end
 
+local fishingSpotCache = false
+local fishingSpotAt = 0
+
 local function isAtFishingSpot()
+  local now = os.clock()
+  if now - fishingSpotAt < 0.25 then return fishingSpotCache end
+  fishingSpotAt = now
+  fishingSpotCache = false
   local cover = findByName("WATERCOVER")
-  if cover and visible(cover) then return true end
-  if findGameCastButton() then return true end
-  if hasFishingText() then return true end
+  if cover and visible(cover) then fishingSpotCache = true return true end
+  if findGameCastButton() then fishingSpotCache = true return true end
+  if hasFishingText() then fishingSpotCache = true return true end
   local char = Player.Character
   local root = char and char:FindFirstChild("HumanoidRootPart")
   if root and Config.FishingSpot then
     local a = Vector3.new(root.Position.X, 0, root.Position.Z)
     local b = Vector3.new(Config.FishingSpot.X, 0, Config.FishingSpot.Z)
-    if (a - b).Magnitude <= Config.SpotRadius then return true end
+    if (a - b).Magnitude <= Config.SpotRadius then fishingSpotCache = true return true end
   end
   return false
 end
@@ -2574,7 +2606,7 @@ local screenAt = 0
 
 local function scanScreen()
   local now = os.clock()
-  if now - screenAt < 0.1 then return end
+  if now - screenAt < 0.1 then return false end
   screenAt = now
   screen.green, screen.small, screen.numbers = {}, {}, {}
   for _, gui in ipairs(gameGuis()) do
@@ -2583,16 +2615,16 @@ local function scanScreen()
         if inst:IsA("GuiObject") and visible(inst) then
           local size = inst.AbsoluteSize
           local score = greenScore(inst)
-          if score > 0 and size.X >= 6 and size.Y >= 3 and size.X <= 700 and size.Y <= 140 then
+          if score > 0 and size.X >= 6 and size.Y >= 3 and size.X <= 700 and size.Y <= 140 and #screen.green < 60 then
             screen.green[#screen.green + 1] = {
               inst = inst, pos = inst.AbsolutePosition, size = size, score = score,
             }
-          elseif score <= 0 and size.X <= 24 and size.Y <= 80 then
+          elseif score <= 0 and size.X <= 24 and size.Y <= 80 and #screen.small < 120 then
             screen.small[#screen.small + 1] = {
               inst = inst, pos = inst.AbsolutePosition, size = size,
             }
           end
-          if inst:IsA("TextLabel") or inst:IsA("TextButton") then
+          if (inst:IsA("TextLabel") or inst:IsA("TextButton")) and #screen.numbers < 120 then
             local value = tonumber(string.match(plain(inst.Text), "%d+"))
             if value then
               screen.numbers[#screen.numbers + 1] = {
@@ -2604,6 +2636,7 @@ local function scanScreen()
       end
     end
   end
+  return true
 end
 
 local function anchorPoint()
@@ -2683,15 +2716,16 @@ end
 
 task.spawn(function()
   local armed, lastClick, lastCast, lastError = true, 0, 0, 0
+  local zone = nil
   while true do
-    RunService.RenderStepped:Wait()
+    task.wait(0.04)
     local ok, err = pcall(function()
       if not Config.AutoFish or not isAtFishingSpot() then
         armed = true
+        zone = nil
         return
       end
-      scanScreen()
-      local zone = findBarZone()
+      if scanScreen() then zone = findBarZone() end
       if not zone then
         armed = true
         if os.clock() - lastCast >= Config.CastDelay then

@@ -15,6 +15,10 @@ local Registry = {
     Name = "Shoot to Steal an Egg",
     Url = "https://raw.githubusercontent.com/artemizagomes26-eng/MeciHub/refs/heads/main/ShootStealEgg.lua",
   },
+  [110432290690507] = {
+    Name = "Hike For Eggs",
+    Url = "https://raw.githubusercontent.com/artemizagomes26-eng/MeciHub/refs/heads/main/HikeForEggs.lua",
+  },
 }
 
 G.MeciHubMultiModules = Registry

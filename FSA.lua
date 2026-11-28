@@ -2546,22 +2546,30 @@ local function pressExit()
   return false
 end
 
+local CLICK_TOUCH_SLOT = 2
+
 local function virtualClick(point)
   local cam = workspace.CurrentCamera
   if not cam then return false end
   point = point or Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y * 0.72)
   if UserInputService.TouchEnabled and not UserInputService.MouseEnabled then
-    return pcall(function()
-      VirtualInputManager:SendTouchEvent(1, 0, point.X, point.Y)
-      task.wait(0.02)
-      VirtualInputManager:SendTouchEvent(1, 2, point.X, point.Y)
+    local started = pcall(function()
+      VirtualInputManager:SendTouchEvent(CLICK_TOUCH_SLOT, 0, point.X, point.Y, game)
     end)
+    task.wait(0.015)
+    pcall(function()
+      VirtualInputManager:SendTouchEvent(CLICK_TOUCH_SLOT, 2, point.X, point.Y, game)
+    end)
+    return started
   end
-  return pcall(function()
+  local pressed = pcall(function()
     VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 1)
-    task.wait(0.02)
+  end)
+  task.wait(0.015)
+  pcall(function()
     VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 1)
   end)
+  return pressed
 end
 
 local function cast()
